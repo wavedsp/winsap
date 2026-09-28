@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Common"><UniqueIdentifier>{764FD69A-FA2A-47B1-82A4-4869B1011892}</UniqueIdentifier></Filter>
+    <Filter Include="Common\icons"><UniqueIdentifier>{4732FF4D-46A4-43FA-A944-D1CE855A501C}</UniqueIdentifier></Filter>
+    <Filter Include="x86"><UniqueIdentifier>{0988437A-341C-4538-A581-2FC2ED21EC23}</UniqueIdentifier></Filter>
+    <Filter Include="x64"><UniqueIdentifier>{05E315DB-87EC-405B-8B2C-AF9C9AB4F8B9}</UniqueIdentifier></Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="common\FileDialogs.cpp"><Filter>Common</Filter></ClCompile>
+    <ClCompile Include="common\FileOpenDialog.cpp"><Filter>Common</Filter></ClCompile>
+    <ClCompile Include="common\InputDialog.cpp"><Filter>Common</Filter></ClCompile>
+    <ClCompile Include="common\main.cpp"><Filter>Common</Filter></ClCompile>
+    <ClCompile Include="common\SpectrogramCache.cpp"><Filter>Common</Filter></ClCompile>
+    <ClCompile Include="common\ToolbarManager.cpp"><Filter>Common</Filter></ClCompile>
+    <ClCompile Include="x86\AudioPlayer.cpp"><Filter>x86</Filter></ClCompile>
+    <ClCompile Include="x86\Panel.cpp"><Filter>x86</Filter></ClCompile>
+    <ClCompile Include="x86\WinsapApp.cpp"><Filter>x86</Filter></ClCompile>
+    <ClCompile Include="x64\AudioPlayer.cpp"><Filter>x64</Filter></ClCompile>
+    <ClCompile Include="x64\Panel.cpp"><Filter>x64</Filter></ClCompile>
+    <ClCompile Include="x64\WinsapApp.cpp"><Filter>x64</Filter></ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="common\DrawContext.h"><Filter>Common</Filter></ClInclude>
+    <ClInclude Include="common\FftKernel.h"><Filter>Common</Filter></ClInclude>
+    <ClInclude Include="common\FileDialogs.h"><Filter>Common</Filter></ClInclude>
+    <ClInclude Include="common\FileOpenDialog.h"><Filter>Common</Filter></ClInclude>
+    <ClInclude Include="common\framework.h"><Filter>Common</Filter></ClInclude>
+    <ClInclude Include="common\InputDialog.h"><Filter>Common</Filter></ClInclude>
+    <ClInclude Include="common\Resource.h"><Filter>Common</Filter></ClInclude>
+    <ClInclude Include="common\SpectrogramCache.h"><Filter>Common</Filter></ClInclude>
+    <ClInclude Include="common\SpectrogramPalette.h"><Filter>Common</Filter></ClInclude>
+    <ClInclude Include="common\SpectrogramSettings.h"><Filter>Common</Filter></ClInclude>
+    <ClInclude Include="common\targetver.h"><Filter>Common</Filter></ClInclude>
+    <ClInclude Include="common\ToolbarManager.h"><Filter>Common</Filter></ClInclude>
+    <ClInclude Include="x86\AudioPlayer.h"><Filter>x86</Filter></ClInclude>
+    <ClInclude Include="x86\Panel.h"><Filter>x86</Filter></ClInclude>
+    <ClInclude Include="x86\Version.h"><Filter>x86</Filter></ClInclude>
+    <ClInclude Include="x86\WinsapApp.h"><Filter>x86</Filter></ClInclude>
+    <ClInclude Include="x64\AudioPlayer.h"><Filter>x64</Filter></ClInclude>
+    <ClInclude Include="x64\Panel.h"><Filter>x64</Filter></ClInclude>
+    <ClInclude Include="x64\Version.h"><Filter>x64</Filter></ClInclude>
+    <ClInclude Include="x64\WinsapApp.h"><Filter>x64</Filter></ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="common\winsap.rc"><Filter>Common</Filter></ResourceCompile>
+    <Image Include="common\wsapSmall.ico"><Filter>Common</Filter></Image>
+    <Image Include="common\logo.bmp"><Filter>Common</Filter></Image>
+    <Image Include="common\icons\about.ico"><Filter>Common\icons</Filter></Image>
+    <Image Include="common\icons\fastBackward.ico"><Filter>Common\icons</Filter></Image>
+    <Image Include="common\icons\fastForward.ico"><Filter>Common\icons</Filter></Image>
+    <Image Include="common\icons\moveBackward.ico"><Filter>Common\icons</Filter></Image>
+    <Image Include="common\icons\moveForward.ico"><Filter>Common\icons</Filter></Image>
+    <Image Include="common\icons\openDown.ico"><Filter>Common\icons</Filter></Image>
+    <Image Include="common\icons\openUp.ico"><Filter>Common\icons</Filter></Image>
+    <Image Include="common\icons\playAll.ico"><Filter>Common\icons</Filter></Image>
+    <Image Include="common\icons\playDown.ico"><Filter>Common\icons</Filter></Image>
+    <Image Include="common\icons\playUp.ico"><Filter>Common\icons</Filter></Image>
+    <Image Include="common\icons\saveAs.ico"><Filter>Common\icons</Filter></Image>
+    <Image Include="common\icons\viewAll.ico"><Filter>Common\icons</Filter></Image>
+    <Image Include="common\icons\zoomIn.ico"><Filter>Common\icons</Filter></Image>
+    <Image Include="common\icons\zoomOut.ico"><Filter>Common\icons</Filter></Image>
+    <Image Include="common\wsap.ico"><Filter>Common</Filter></Image>
+  </ItemGroup>
+</Project>

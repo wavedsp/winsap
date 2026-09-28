@@ -1,0 +1,192 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|Win32">
+      <Configuration>Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <ProjectGuid>{F2E1834A-BAD5-4EB1-9D7C-88BA9AC653F4}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <RootNamespace>winsap</RootNamespace>
+    <ProjectName>winsap</ProjectName>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)'=='Debug'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Release'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings" />
+  <ImportGroup Label="Shared" />
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props"
+            Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')"
+            Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Condition="'$(Platform)'=='Win32'">
+    <OutDir>$(SolutionDir)..\bin\x86\$(Configuration)\</OutDir>
+    <IntDir>$(SolutionDir)..\build\x86\$(Configuration)\</IntDir>
+    <TargetName>winsap32</TargetName>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Platform)'=='x64'">
+    <OutDir>$(SolutionDir)..\bin\x64\$(Configuration)\</OutDir>
+    <IntDir>$(SolutionDir)..\build\x64\$(Configuration)\</IntDir>
+    <TargetName>winsap</TargetName>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Debug'">
+    <LinkIncremental>true</LinkIncremental>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Release'">
+    <LinkIncremental>false</LinkIncremental>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>comctl32.lib;winmm.lib;comdlg32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+    <Manifest>
+      <AdditionalManifestFiles>$(ProjectDir)winsap.manifest</AdditionalManifestFiles>
+    </Manifest>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Platform)'=='Win32'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(ProjectDir)x86;$(ProjectDir)common;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>WIN32;WINSAP_X86;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <ResourceCompile>
+      <AdditionalIncludeDirectories>$(ProjectDir)common;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>WIN32;WINSAP_X86;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ResourceCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Platform)'=='x64'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(ProjectDir)x64;$(ProjectDir)common;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>WINSAP_X64;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <ResourceCompile>
+      <AdditionalIncludeDirectories>$(ProjectDir)common;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>WINSAP_X64;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ResourceCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
+    <ClCompile>
+      <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
+    <ClCompile>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="common\FileDialogs.cpp" />
+    <ClCompile Include="common\FileOpenDialog.cpp" />
+    <ClCompile Include="common\InputDialog.cpp" />
+    <ClCompile Include="common\main.cpp" />
+    <ClCompile Include="common\SpectrogramCache.cpp" />
+    <ClCompile Include="common\ToolbarManager.cpp" />
+    <ClCompile Include="x86\AudioPlayer.cpp">
+      <ExcludedFromBuild Condition="'$(Platform)'!='Win32'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="x86\Panel.cpp">
+      <ExcludedFromBuild Condition="'$(Platform)'!='Win32'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="x86\WinsapApp.cpp">
+      <ExcludedFromBuild Condition="'$(Platform)'!='Win32'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="x64\AudioPlayer.cpp">
+      <ExcludedFromBuild Condition="'$(Platform)'!='x64'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="x64\Panel.cpp">
+      <ExcludedFromBuild Condition="'$(Platform)'!='x64'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="x64\WinsapApp.cpp">
+      <ExcludedFromBuild Condition="'$(Platform)'!='x64'">true</ExcludedFromBuild>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="common\DrawContext.h" />
+    <ClInclude Include="common\FileDialogs.h" />
+    <ClInclude Include="common\FileOpenDialog.h" />
+    <ClInclude Include="common\framework.h" />
+    <ClInclude Include="common\InputDialog.h" />
+    <ClInclude Include="common\Resource.h" />
+    <ClInclude Include="common\FftKernel.h" />
+    <ClInclude Include="common\SpectrogramCache.h" />
+    <ClInclude Include="common\SpectrogramPalette.h" />
+    <ClInclude Include="common\SpectrogramSettings.h" />
+    <ClInclude Include="common\targetver.h" />
+    <ClInclude Include="common\ToolbarManager.h" />
+    <ClInclude Include="x86\AudioPlayer.h" />
+    <ClInclude Include="x86\Panel.h" />
+    <ClInclude Include="x86\Version.h" />
+    <ClInclude Include="x86\WinsapApp.h" />
+    <ClInclude Include="x64\AudioPlayer.h" />
+    <ClInclude Include="x64\Panel.h" />
+    <ClInclude Include="x64\Version.h" />
+    <ClInclude Include="x64\WinsapApp.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="common\winsap.rc" />
+  </ItemGroup>
+  <ItemGroup>
+    <Image Include="common\wsapSmall.ico" />
+    <Image Include="common\logo.bmp" />
+    <Image Include="common\icons\about.ico" />
+    <Image Include="common\icons\fastBackward.ico" />
+    <Image Include="common\icons\fastForward.ico" />
+    <Image Include="common\icons\moveBackward.ico" />
+    <Image Include="common\icons\moveForward.ico" />
+    <Image Include="common\icons\openDown.ico" />
+    <Image Include="common\icons\openUp.ico" />
+    <Image Include="common\icons\playAll.ico" />
+    <Image Include="common\icons\playDown.ico" />
+    <Image Include="common\icons\playUp.ico" />
+    <Image Include="common\icons\saveAs.ico" />
+    <Image Include="common\icons\viewAll.ico" />
+    <Image Include="common\icons\zoomIn.ico" />
+    <Image Include="common\icons\zoomOut.ico" />
+    <Image Include="common\wsap.ico" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets" />
+</Project>
