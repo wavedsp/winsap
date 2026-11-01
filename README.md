@@ -137,6 +137,29 @@ Each toolbar ICO contains 16, 20, 24, 32, 40, 48, and 64-pixel images. Replace
 an ICO with the same filename to update that command in both the toolbar and
 menus.
 
+### Regenerating the application icon
+
+The editable artwork is `src\common\wsap.svg`: the original red waveform inside
+a square frame with green, light-orange, red and blue quarters and gradient
+lighting. After editing it, run this command from the repository root:
+
+```powershell
+powershell.exe -STA -NoProfile -File .\tools\generate-icon.ps1
+```
+
+The tool uses Windows PowerShell and Windows' built-in WPF renderer, with no
+downloads or third-party graphics packages. It renders each size at four times
+the target resolution, then downsamples for smooth edges and transparency.
+It overwrites both `src\common\wsap.ico` and `src\common\wsapSmall.ico` with the
+same multi-resolution icon containing 16, 20, 24, 32, 40, 48, 64, 96, 128 and
+256-pixel frames. It also writes `build\icons\winsap-icon-256.png` for preview;
+that generated preview is ignored by Git.
+
+Commit the SVG, generator and regenerated ICO files together when changing the
+artwork. Normal builds use the checked-in ICO files and do not run this tool.
+The renderer supports the paths, solid fills, strokes and linear gradients used
+by this artwork; it is not a general-purpose SVG converter.
+
 ## Using WinSap
 
 - Open Up/Down supports binary-short audio, parameter text, and FFT-amplitude
