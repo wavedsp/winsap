@@ -7,6 +7,8 @@
  *  PURPOSE: Encapsulates all panel (upper/lower) related data and operations
  *
  *  Update:   2025.4
+ *            2026.11 Per slot parameter frame index
+ *            2026.11 Sparse parameter frame index, no 40000 frame limit
  *
  ************************************************************************/
 
@@ -20,9 +22,11 @@
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <utility>
 #include "SpectrogramPalette.h"
 
 #include "SpectrogramCache.h"
+#include "FileDialogs.h"
 
 // Forward declarations
 class WinsapApp;
@@ -30,6 +34,14 @@ struct DrawContext;
 
 #define PANELMAXFILE        6
 #define MAXFILENAME         255
+// FRAME= numbers at or above this are ignored. The index only holds the frames
+// present, so this is no memory bound; it keeps int frame arithmetic (begin +
+// count, zoom doubling) clear of overflow.
+#define PARAMETER_MAX_FRAMES 1000000000L
+
+// (frame number, byte offset of its FRAME= line), sorted by frame, one entry
+// per frame present in the file.
+typedef std::vector<std::pair<long, long>> ParameterIndex;
 
 // FFT constants
 #define FFT_LENGTH          2048
@@ -78,7 +90,9 @@ public:
     // File Management
     bool OpenFile(int index, const WCHAR* fileName, int fileType,
                   long dataOffset = 0, long dataLength = 0,
-                  BOOL isWav = FALSE, DWORD samplingRate = 0);
+                  BOOL isWav = FALSE, DWORD samplingRate = 0,
+                  int sampleFormat = wavPcm16,
+                  int channels = 1, int channel = 0);
     void CloseFile(int index);
     void CloseAllFiles();
     bool IsFileOpen(int index) const { return m_flag[index] != 0; }
@@ -163,6 +177,18 @@ public:
     float* GetFileLowLimits() { return m_fileLowLimit; }
     long* GetFileFrameTotals() { return m_fileFrameTotal; }
     BOOL* GetIsWavFlags() { return m_isWav; }
+    int GetSampleFormat(int index) const { return m_sampleFormat[index]; }
+    // A stereo wav is split over both panels: the left channel sits in an upper
+    // slot and the right channel in the lower slot with the same index.
+    int GetChannelCount(int index) const { return m_channelCount[index]; }
+    int GetChannel(int index) const { return m_channel[index]; }
+    bool IsStereoChannel(int index) const { return m_flag[index] != 0 && m_channelCount[index] > 1; }
+    bool HasStereoFile() const {
+        for (int i = 0; i < PANELMAXFILE; i++) {
+            if (IsStereoChannel(i)) return true;
+        }
+        return false;
+    }
     DWORD* GetSamplingRates() { return m_samplingRate; }
     long* GetFileHeaderLengths() { return m_fileHeaderLength; }
     char** GetBuffers() { return m_buf; }
@@ -183,7 +209,7 @@ public:
     // Parameter file support
     bool IsParActive() const { return m_parActive; }
     void SetParActive(bool active) { m_parActive = active; }
-    long* GetParameterIndex() { return m_parameterIndex; }
+    const ParameterIndex& GetParameterIndex(int index) const { return m_parameterIndex[index]; }
 
     // UI interaction
     int GetFileIndexAtPosition(int xPos, int yPos, const DrawContext& ctx) const;
@@ -191,6 +217,9 @@ public:
     // True while any open file is still being analysed for the spectrogram, so
     // the frame can schedule a repaint and let the picture fill in.
     bool SpectrogramBuilding() const;
+    // Drops the cached analysis after the slot's sampling rate changed; the
+    // next paint rebuilds it with the new geometry.
+    void InvalidateSpectrogram(int fileIndex);
     // How many dB below the file peak the grey ramp spans.
     float GetSpectrogramRangeDb() const { return m_spectrogramRangeDb; }
     void SetSpectrogramRangeDb(float rangeDb);
@@ -224,8 +253,8 @@ private:
     long ParFileTotal(FILE* fp);
     void BuildParameterIndex(int index);
     void DispParameter(const DrawContext& ctx, int fileIndex);
-    void DispID(const DrawContext& ctx, const WRect& box, const char* buf,
-                long totalFrames, int frameBegin, const long* paramIndex);
+    void DispID(const DrawContext& ctx, const WRect& box, const char* buf, long bufLength,
+                long totalFrames, int frameBegin, const ParameterIndex& paramIndex);
 
     // FFT helper methods
     void FFT(float* z, float* y, int n);
@@ -271,6 +300,9 @@ private:
 
     long m_fileLength[PANELMAXFILE];
     BOOL m_isWav[PANELMAXFILE];
+    int m_sampleFormat[PANELMAXFILE];   // WavSampleFormat of the wav data on disk
+    int m_channelCount[PANELMAXFILE];   // Channels in the wav file
+    int m_channel[PANELMAXFILE];        // Channel of the wav file held by the slot
     long m_fileHeaderLength[PANELMAXFILE];
     DWORD m_samplingRate[PANELMAXFILE];
     long m_fileFrameTotal[PANELMAXFILE];
@@ -316,7 +348,9 @@ private:
     long m_lastFrameNum;
 
     // Parameter file support
-    long m_parameterIndex[40000];
+    // Byte offset of each FRAME= line, per slot so that one file's offsets are
+    // never applied to another file's buffer. -1 marks a frame the file lacks.
+    ParameterIndex m_parameterIndex[PANELMAXFILE];
 
     // FFT buffers
     float m_ar[FFT_LENGTH];         // Real part of FFT result
@@ -366,7 +400,12 @@ private:
     void DrawSeparatorLines(const DrawContext& ctx);
     void DrawZeroLine(const DrawContext& ctx);
     void DrawPlaybackCursor(const DrawContext& ctx);
+    void DrawSpectrogramMark(const DrawContext& ctx);
+    bool HasSpectrumFile() const;
+    bool IsSpectrogramView() const;
     void ExtractFileName(const WCHAR* path, WCHAR* name) const;
+    // File name shown in the frame line, tagged with the channel for stereo files
+    void DisplayFileName(int index, WCHAR* name, size_t nameSize) const;
 
     // Helper utilities
     static void GrowRect(WRect* rect, int dx, int dy);

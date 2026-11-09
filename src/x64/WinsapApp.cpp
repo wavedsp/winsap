@@ -8,6 +8,7 @@
  *
  *  Update:   2025.4 Update the code base
  *            2026.1 Porting to C++
+ *            2026.11 Bounded command line parsing, .par always opens as Parameter, growing backbuffer, raw rate reaches FFT tracks
  *
  ************************************************************************/
 
@@ -49,6 +50,48 @@ static void AppendFailedFile(WCHAR* list, size_t listSize, int& count, const WCH
         wcscat_s(list, listSize, L"\n");
     }
     wcscat_s(list, listSize, fileName);
+}
+
+// Commands that act on the lower panel, so a stereo view is synced from it
+static bool IsLowerPanelCommand(int command)
+{
+    switch (command) {
+    case ID_DOWN_FRAMELENGTH:
+    case ID_DOWN_GOTOFRAME:
+    case ID_DOWN_NUMBEROFFRAMES:
+    case ID_DOWN_PAGENUMBERS:
+    case ID_DOWN_LIMIT:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static bool IsPlayableFileType(int fileType)
+{
+    return fileType == ftBinaryShort || fileType == ftFFTAmplitude;
+}
+
+static bool PanelHasFileType(Panel& panel, int fileType)
+{
+    for (int i = 0; i < PANELMAXFILE; i++) {
+        if (panel.IsFileOpen(i) && panel.GetFileType(i) == fileType) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static const WCHAR* MarkStatusText(bool upper, MarkType markType)
+{
+    switch (markType) {
+    case mtLeft:
+        return upper ? L"Up Mark Left" : L"Down Mark Left";
+    case mtAll:
+        return upper ? L"Up Mark All" : L"Down Mark All";
+    default:
+        return L"";
+    }
 }
 
 static const WCHAR* CommandStatusText(int command)
@@ -394,8 +437,13 @@ LRESULT CALLBACK WinsapApp::WndProc(HWND hwnd, UINT message, WPARAM wParam, LPAR
         s_pApp->OnCreate(hwnd);
         break;
 
-    case WM_COMMAND:
-        return s_pApp->OnCommand(hwnd, wParam, lParam);
+    case WM_COMMAND: {
+        LRESULT result = s_pApp->OnCommand(hwnd, wParam, lParam);
+        if (IsWindow(hwnd)) {
+            s_pApp->SyncStereoState(hwnd, IsLowerPanelCommand(LOWORD(wParam)));
+        }
+        return result;
+    }
 
     case WM_SIZE:
         s_pApp->OnSize(hwnd, wParam, lParam);
@@ -447,6 +495,7 @@ LRESULT CALLBACK WinsapApp::WndProc(HWND hwnd, UINT message, WPARAM wParam, LPAR
 
     case WM_KEYDOWN:
         s_pApp->OnKeyDown(hwnd, wParam, lParam);
+        s_pApp->SyncStereoState(hwnd, false);
         break;
 
     case WM_LBUTTONDOWN:
@@ -459,6 +508,7 @@ LRESULT CALLBACK WinsapApp::WndProc(HWND hwnd, UINT message, WPARAM wParam, LPAR
 
     case WM_RBUTTONDOWN:
         s_pApp->OnRButtonDown(hwnd, wParam, lParam);
+        s_pApp->SyncStereoState(hwnd, false);
         break;
 
     case WM_NOTIFY:
@@ -552,6 +602,8 @@ void WinsapApp::OnDestroy()
 // ===================== On Size =======================
 void WinsapApp::OnSize(HWND hwnd, WPARAM wParam, LPARAM lParam)
 {
+    EnsureBackBuffer(hwnd);
+
     // Resize toolbar
     m_toolbarManager.MoveToolbar(hwnd);
 
@@ -777,9 +829,13 @@ void WinsapApp::ApplyRawSamplingRate(DWORD rate)
     for (Panel* panel : panels) {
         for (int i = 0; i < PANELMAXFILE; i++) {
             if (!panel->IsFileOpen(i)) continue;
-            if (panel->GetFileTypes()[i] != ftBinaryShort) continue;
+            // Raw audio shown as an FFT amplitude plays at the raw rate too, so its
+            // frequency axis has to follow the same setting.
+            if (panel->GetFileTypes()[i] == ftParameter) continue;
             if (panel->GetIsWavFlags()[i]) continue;   // A wav keeps its own rate
+            if (panel->GetSamplingRates()[i] == rate) continue;
             panel->GetSamplingRates()[i] = rate;
+            panel->InvalidateSpectrogram(i);
         }
     }
 
@@ -948,9 +1004,17 @@ void WinsapApp::OnMouseMove(HWND hwnd, WPARAM wParam, LPARAM lParam)
 
             if (isWav) {
                 // WAV file - the rate comes from the file header
+                const WCHAR* channelText = L"Mono";
+                if (filePanel->GetChannelCount(fileIndex) > 1) {
+                    channelText = filePanel->GetChannel(fileIndex) == 0
+                                      ? L"Stereo (left channel)"
+                                      : L"Stereo (right channel)";
+                }
                 swprintf_s(fileInfo, 512,
-                           L"%s  |  WAV: %lu Hz, Mono, 16-bit PCM, %zu samples (%.3f sec)",
-                           fullPath, samplingRate, samples, seconds);
+                           L"%s  |  WAV: %lu Hz, %s, %s, %zu samples (%.3f sec)",
+                           fullPath, samplingRate, channelText,
+                           WavSampleFormatName(filePanel->GetSampleFormat(fileIndex)),
+                           samples, seconds);
             }
             else {
                 // Raw PCM - the rate is the one set from the Options menu
@@ -1004,8 +1068,9 @@ void WinsapApp::OnMouseMove(HWND hwnd, WPARAM wParam, LPARAM lParam)
         float datTp = static_cast<float>(frameBegin + frameNum) * static_cast<float>(frameLength);
         float horiz = static_cast<float>(waveBox.b.x - waveBox.a.x) / (datTp - datHp);
 
-        // Convert pixel position to actual sample number in file
-        int xCoord = static_cast<int>(static_cast<float>(xPos - waveBox.a.x) / horiz);
+        // Convert pixel position to actual sample number in file; 64 bits because
+        // a long parameter file spans more samples than an int holds
+        const long long xCoord = static_cast<long long>(static_cast<float>(xPos - waveBox.a.x) / horiz);
 
         // Calculate y coordinate (amplitude value)
         float upLimit = panel->GetUpLimit();
@@ -1054,7 +1119,7 @@ void WinsapApp::OnMouseMove(HWND hwnd, WPARAM wParam, LPARAM lParam)
         }
         else {
             // Waveform: sample index against amplitude, as it always was.
-            swprintf_s(statusText, 256, L" (%d, %d)", xCoord, yCoord);
+            swprintf_s(statusText, 256, L" (%lld, %d)", xCoord, yCoord);
         }
 
         if (hwndStatus) {
@@ -1137,6 +1202,7 @@ void WinsapApp::OnRButtonDown(HWND hwnd, WPARAM wParam, LPARAM lParam)
                 }
             }
 
+            SyncStereoMark(true);
             m_updateType = upUp;
             InvalidateRect(hwnd, nullptr, FALSE);
             return;
@@ -1199,66 +1265,91 @@ void WinsapApp::OnRButtonDown(HWND hwnd, WPARAM wParam, LPARAM lParam)
                 }
             }
 
+            SyncStereoMark(false);
             m_updateType = upDown;
             InvalidateRect(hwnd, nullptr, FALSE);
             return;
         }
     }
 
-    // Not in waveform area, check if clicking on filename to close
-    if (m_upperPanel.IsActive()) {
-        int fileIndex = m_upperPanel.GetFileIndexAtPosition(xPos, yPos, ctx);
+    // Not in waveform area: right-clicking a file name opens its context menu
+    for (Panel* filePanel : { &m_upperPanel, &m_lowerPanel }) {
+        if (!filePanel->IsActive()) continue;
+        int fileIndex = filePanel->GetFileIndexAtPosition(xPos, yPos, ctx);
         if (fileIndex >= 0) {
-            // Close the file
-            m_upperPanel.CloseFile(fileIndex);
-
-            // Check if all files are closed
-            bool hasFiles = false;
-            for (int i = 0; i < PANELMAXFILE; i++) {
-                if (m_upperPanel.GetFlags()[i] != 0) {
-                    hasFiles = true;
-                    break;
-                }
-            }
-
-            // If no files are left, recompute the one-panel layout.
-            if (!hasFiles) {
-                ResizeDesktop(hwnd);
-            }
-
-            // Redraw
-            m_updateType = upAll;
-            InvalidateRect(hwnd, nullptr, FALSE);
+            ShowFileMenu(hwnd, *filePanel, fileIndex, xPos, yPos);
             return;
         }
     }
+}
 
-    // Check lower panel
-    if (m_lowerPanel.IsActive()) {
-        int fileIndex = m_lowerPanel.GetFileIndexAtPosition(xPos, yPos, ctx);
-        if (fileIndex >= 0) {
-            // Close the file
-            m_lowerPanel.CloseFile(fileIndex);
+void WinsapApp::CloseFileAt(HWND hwnd, Panel& panel, int fileIndex)
+{
+    panel.CloseFile(fileIndex);
 
-            // Check if all files are closed
-            bool hasFiles = false;
-            for (int i = 0; i < PANELMAXFILE; i++) {
-                if (m_lowerPanel.GetFlags()[i] != 0) {
-                    hasFiles = true;
-                    break;
-                }
-            }
+    // If no files are left, recompute the one-panel layout.
+    bool hasFiles = false;
+    for (int i = 0; i < PANELMAXFILE && !hasFiles; i++) {
+        hasFiles = panel.GetFlags()[i] != 0;
+    }
+    if (!hasFiles) {
+        ResizeDesktop(hwnd);
+    }
 
-            // If no files are left, recompute the one-panel layout.
-            if (!hasFiles) {
-                ResizeDesktop(hwnd);
-            }
+    m_updateType = upAll;
+    InvalidateRect(hwnd, nullptr, FALSE);
+}
 
-            // Redraw
-            m_updateType = upAll;
-            InvalidateRect(hwnd, nullptr, FALSE);
-            return;
-        }
+void WinsapApp::ShowFileMenu(HWND hwnd, Panel& panel, int fileIndex, int xPos, int yPos)
+{
+    enum { kClose = 1, kPlayChannel, kPlayMarked, kPlayMarkedChannel };
+
+    const bool stereo = panel.IsStereoChannel(fileIndex);
+    const bool playable = IsPlayableFileType(panel.GetFileType(fileIndex));
+    const UINT markFlags = (playable && MarkedAreaHasData(panel, fileIndex)) ? MF_ENABLED : MF_GRAYED;
+    const WCHAR* channel = (&panel == &m_upperPanel) ? L"left" : L"right";
+
+    HMENU menu = CreatePopupMenu();
+    if (!menu) return;
+    AppendMenu(menu, MF_STRING, kClose, L"Close file");
+    AppendMenu(menu, MF_SEPARATOR, 0, nullptr);
+    if (stereo) {
+        WCHAR text[96];
+        swprintf_s(text, _countof(text), L"Play this channel (%s)", channel);
+        AppendMenu(menu, MF_STRING | (playable ? MF_ENABLED : MF_GRAYED), kPlayChannel, text);
+        AppendMenu(menu, MF_STRING | markFlags, kPlayMarked, L"Play marked area (stereo)");
+        swprintf_s(text, _countof(text), L"Play marked area in this channel (%s)", channel);
+        AppendMenu(menu, MF_STRING | markFlags, kPlayMarkedChannel, text);
+    }
+    else {
+        AppendMenu(menu, MF_STRING | markFlags, kPlayMarkedChannel, L"Play marked area");
+    }
+
+    POINT pt = { xPos, yPos };
+    ClientToScreen(hwnd, &pt);
+    const int command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY,
+                                       pt.x, pt.y, 0, hwnd, nullptr);
+    DestroyMenu(menu);
+
+    switch (command) {
+    case kClose:
+        CloseFileAt(hwnd, panel, fileIndex);
+        break;
+    case kPlayChannel:
+        m_playbackQueue.clear();
+        PlayFileRange(hwnd, panel, fileIndex, 0, panel.GetAudioSampleCount(fileIndex),
+                      FilePlayRate(panel, fileIndex), false);
+        break;
+    case kPlayMarked:
+        m_playbackQueue.clear();
+        PlayMarkedArea(hwnd, panel, fileIndex, true);
+        break;
+    case kPlayMarkedChannel:
+        m_playbackQueue.clear();
+        PlayMarkedArea(hwnd, panel, fileIndex, false);
+        break;
+    default:
+        break;
     }
 }
 
@@ -1269,13 +1360,296 @@ void WinsapApp::SyncLockedLowerStart()
     }
 }
 
+// Moves every active panel by one frame or by its frame skip. With the
+// starting-frame lock on, the lower panel follows the upper one instead.
+void WinsapApp::MovePanels(HWND hwnd, int direction, bool bySkip)
+{
+    const bool upperActive = m_upperPanel.IsActive();
+    const bool lowerActive = m_lowerPanel.IsActive();
+    if (upperActive) {
+        const int step = bySkip ? m_upperPanel.GetFrameSkip() : 1;
+        m_upperPanel.SetFrameBegin(m_upperPanel.GetFrameBegin() + direction * step);
+    }
+    if (lowerActive) {
+        if (m_lockStartFrame && upperActive) {
+            SyncLockedLowerStart();
+        }
+        else {
+            const int step = bySkip ? m_lowerPanel.GetFrameSkip() : 1;
+            m_lowerPanel.SetFrameBegin(m_lowerPanel.GetFrameBegin() + direction * step);
+        }
+    }
+    if (upperActive || lowerActive) {
+        m_updateType = upAll;
+        InvalidateRect(hwnd, nullptr, FALSE);
+    }
+}
+
+// Copies the mark of one panel to the other while a stereo file is open, so
+// marking a channel marks both.
+void WinsapApp::SyncStereoMark(bool fromUpper)
+{
+    if (!StereoActive()) {
+        return;
+    }
+    Panel& source = fromUpper ? m_upperPanel : m_lowerPanel;
+    Panel& target = fromUpper ? m_lowerPanel : m_upperPanel;
+    target.SetListenRange(source.GetListenBegin(), source.GetListenEnd());
+    target.SetMarkType(source.GetMarkType());
+
+    HWND hwndStatus = m_toolbarManager.GetStatuslineHandle();
+    if (hwndStatus) {
+        SendMessage(hwndStatus, SB_SETTEXT, fromUpper ? STATUSBAR_MARK_DOWN : STATUSBAR_MARK_UP,
+                    (LPARAM)MarkStatusText(!fromUpper, target.GetMarkType()));
+    }
+}
+
+// Keeps both halves of every stereo file together and, while one is open,
+// gives the two panels the same view and mark. A channel whose partner was
+// closed is closed as well.
+void WinsapApp::SyncStereoState(HWND hwnd, bool fromLower)
+{
+    bool closed = false;
+    for (int i = 0; i < PANELMAXFILE; i++) {
+        const bool up = m_upperPanel.IsStereoChannel(i);
+        const bool down = m_lowerPanel.IsStereoChannel(i);
+        if (!up && !down) {
+            continue;
+        }
+        if (up && down && m_upperPanel.GetChannel(i) == 0 && m_lowerPanel.GetChannel(i) == 1 &&
+            _wcsicmp(m_upperPanel.GetFileName(i), m_lowerPanel.GetFileName(i)) == 0) {
+            continue;
+        }
+        if (up) m_upperPanel.CloseFile(i);
+        if (down) m_lowerPanel.CloseFile(i);
+        closed = true;
+    }
+
+    bool changed = closed;
+    if (StereoActive()) {
+        Panel& source = fromLower ? m_lowerPanel : m_upperPanel;
+        Panel& target = fromLower ? m_upperPanel : m_lowerPanel;
+
+        // Frame length first: it decides how many frames the files hold
+        if (target.GetFrameLength() != source.GetFrameLength()) {
+            target.SetFrameLength(source.GetFrameLength());
+            changed = true;
+        }
+        if (target.GetFrameNum() != source.GetFrameNum()) {
+            target.SetFrameNum(source.GetFrameNum());
+            changed = true;
+        }
+        if (target.GetFrameBegin() != source.GetFrameBegin()) {
+            target.SetFrameBegin(source.GetFrameBegin());
+            changed = true;
+        }
+        target.SetFrameSkip(source.GetFrameSkip());
+
+        // FFT amplitude files use dB limits, which do not carry over to samples
+        if (PanelHasFileType(source, ftFFTAmplitude) ==
+                PanelHasFileType(target, ftFFTAmplitude) &&
+            (target.GetUpLimit() != source.GetUpLimit() ||
+             target.GetLowLimit() != source.GetLowLimit())) {
+            target.SetUpLimit(source.GetUpLimit());
+            target.SetLowLimit(source.GetLowLimit());
+            changed = true;
+        }
+
+        if (target.GetMarkType() != source.GetMarkType() ||
+            target.GetListenBegin() != source.GetListenBegin() ||
+            target.GetListenEnd() != source.GetListenEnd()) {
+            SyncStereoMark(!fromLower);
+            changed = true;
+        }
+    }
+
+    if (closed) {
+        ResizeDesktop(hwnd);
+    }
+    if (changed) {
+        m_updateType = upAll;
+        InvalidateRect(hwnd, nullptr, FALSE);
+    }
+}
+
+bool WinsapApp::StereoFftActive() const
+{
+    for (int i = 0; i < PANELMAXFILE; i++) {
+        if (m_upperPanel.IsStereoChannel(i) && m_upperPanel.GetFileType(i) == ftFFTAmplitude) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// A mono file may join a stereo file only in the upper panel, and only when
+// that keeps waveform and FFT mode apart.
+bool WinsapApp::AllowMonoOpenWithStereo(HWND hwnd, int fileMode)
+{
+    if (!StereoActive()) {
+        return true;
+    }
+    if (StereoFftActive()) {
+        MessageBox(hwnd, L"A stereo file is open in FFT mode, and no other file can be "
+                         L"open with it.\nClose the stereo file first.",
+                   L"Open File", MB_OK | MB_ICONINFORMATION);
+        return false;
+    }
+    if (fileMode == ftFFTAmplitude) {
+        MessageBox(hwnd, L"A stereo file is open in waveform mode, so files cannot be "
+                         L"opened in FFT mode.\nClose the stereo files first.",
+                   L"Open File", MB_OK | MB_ICONINFORMATION);
+        return false;
+    }
+    return true;
+}
+
+// Opens a stereo wav with its left channel in upper slot upperIndex and its
+// right channel in the same lower slot. A negative index picks a free slot.
+bool WinsapApp::OpenStereoFile(HWND hwnd, const WCHAR* fileName, int upperIndex, int fileMode,
+                               long headerLength, DWORD dataLength, DWORD samplingRate,
+                               int sampleFormat)
+{
+    WCHAR wOut[MAX_STR_LEN];
+
+    // In FFT mode a stereo file stands alone. In waveform mode the lower panel
+    // is given over to right channels and no file may be in FFT mode.
+    const bool fftMode = fileMode == ftFFTAmplitude;
+    auto conflicts = [this, fftMode](bool upper, int i) {
+        Panel& panel = upper ? m_upperPanel : m_lowerPanel;
+        if (!panel.IsFileOpen(i)) return false;
+        if (fftMode || panel.GetFileType(i) == ftFFTAmplitude) return true;
+        return !upper && !panel.IsStereoChannel(i);
+    };
+    bool hasConflicts = false;
+    for (int i = 0; i < PANELMAXFILE && !hasConflicts; i++) {
+        hasConflicts = conflicts(true, i) || conflicts(false, i);
+    }
+    if (hasConflicts) {
+        auto shortName = [](const WCHAR* path) {
+            const WCHAR* slash = wcsrchr(path, L'\\');
+            return slash ? slash + 1 : path;
+        };
+        // Name each file that would be closed and the reason it cannot stay
+        bool lowerFiles = false;
+        bool fftFiles = false;
+        std::wstring closeList;
+        for (int i = 0; i < PANELMAXFILE; i++) {
+            const bool closeUp = conflicts(true, i);
+            const bool closeDown = conflicts(false, i);
+            if (!closeUp && !closeDown) continue;
+            const bool pair = m_upperPanel.IsStereoChannel(i) && m_lowerPanel.IsStereoChannel(i);
+            for (int side = 0; side < 2; side++) {
+                Panel& panel = side == 0 ? m_upperPanel : m_lowerPanel;
+                if (!panel.IsFileOpen(i) || !(pair || (side == 0 ? closeUp : closeDown))) continue;
+                if (pair && side == 1) continue;  // listed once as a stereo file
+                const bool fft = panel.GetFileType(i) == ftFFTAmplitude;
+                fftFiles = fftFiles || fft;
+                lowerFiles = lowerFiles || (side == 1 && !fft);
+                closeList += L"    ";
+                closeList += pair ? L"Both panels" : (side == 0 ? L"Upper panel" : L"Lower panel");
+                closeList += L": ";
+                closeList += shortName(panel.GetFileName(i));
+                closeList += pair ? L" (stereo" : L" (";
+                closeList += pair ? (fft ? L", FFT mode)" : L")") : (fft ? L"FFT mode)" : L"waveform)");
+                closeList += L"\n";
+            }
+        }
+
+        std::wstring message = shortName(fileName);
+        if (fftMode) {
+            message += L" is a stereo file being opened in FFT mode. Its left channel goes "
+                       L"to the upper panel and its right channel to the lower panel, and a "
+                       L"stereo file in FFT mode must be the only open file.\n";
+        }
+        else {
+            message += L" is a stereo file being opened in waveform mode. Its left channel "
+                       L"goes to the upper panel and its right channel to the lower panel.\n";
+            if (lowerFiles) {
+                message += L"\n- The lower panel can then only show the right channels of "
+                           L"stereo files, so mono files open there must be closed.\n";
+            }
+            if (fftFiles) {
+                message += L"\n- Waveform and FFT mode cannot be mixed while a stereo file "
+                           L"is open, so files open in FFT mode must be closed.\n";
+            }
+        }
+        message += L"\nThese files will be closed:\n";
+        message += closeList;
+        message += L"\nClose them and open the stereo file?";
+        if (MessageBox(hwnd, message.c_str(), L"Open Stereo File",
+                       MB_YESNO | MB_ICONQUESTION) != IDYES) {
+            m_toolbarManager.UpdateStatusline(L"Stereo file not opened.", STATUSBAR_FILE_INFO);
+            return false;
+        }
+        for (int i = 0; i < PANELMAXFILE; i++) {
+            bool closeUp = conflicts(true, i);
+            bool closeDown = conflicts(false, i);
+            // A stereo file goes as a whole
+            if ((closeUp || closeDown) &&
+                m_upperPanel.IsStereoChannel(i) && m_lowerPanel.IsStereoChannel(i)) {
+                closeUp = closeDown = true;
+            }
+            if (closeUp) m_upperPanel.CloseFile(i);
+            if (closeDown) m_lowerPanel.CloseFile(i);
+        }
+        // Everything else is gone, so the file takes the first slot
+        if (fftMode) {
+            upperIndex = 0;
+        }
+    }
+
+    if (upperIndex < 0 || upperIndex >= PANELMAXFILE) {
+        upperIndex = PANELMAXFILE - 1;
+        for (int i = 0; i < PANELMAXFILE; i++) {
+            if (!m_upperPanel.IsFileOpen(i)) {
+                upperIndex = i;
+                break;
+            }
+        }
+    }
+    m_upperPanel.CloseFile(upperIndex);
+    m_lowerPanel.CloseFile(upperIndex);
+
+    const long length = static_cast<long>(dataLength);
+    if (!m_upperPanel.OpenFile(upperIndex, fileName, fileMode, headerLength, length,
+                               TRUE, samplingRate, sampleFormat, 2, 0) ||
+        !m_lowerPanel.OpenFile(upperIndex, fileName, fileMode, headerLength, length,
+                               TRUE, samplingRate, sampleFormat, 2, 1)) {
+        m_upperPanel.CloseFile(upperIndex);
+        m_lowerPanel.CloseFile(upperIndex);
+        ResizeDesktop(hwnd);
+        swprintf_s(wOut, MAX_STR_LEN, L"Cannot load file %s!", fileName);
+        MessageBox(hwnd, wOut, L"ERROR", MB_OK | MB_ICONERROR);
+        return false;
+    }
+
+    SyncStereoState(hwnd, false);
+
+    swprintf_s(wOut, MAX_STR_LEN,
+               L"Opened stereo %s in slot %d: left channel up, right channel down.",
+               fileName, upperIndex + 1);
+    m_toolbarManager.UpdateStatusline(wOut, STATUSBAR_FILE_INFO);
+
+    ResizeDesktop(hwnd);
+    SetFocus(hwnd);
+    m_updateType = upAll;
+    InvalidateRect(hwnd, nullptr, FALSE);
+    return true;
+}
+
 void WinsapApp::ShowHelpTopics(HWND hwnd)
 {
     MessageBox(
         hwnd,
         L"Opening and display\n"
         L"Use Open Up or Open Down, choose binary-short, parameter, or FFT-amplitude "
-        L"mode. Waveforms use connected display. WAV input must be mono 16-bit PCM.\n\n"
+        L"mode. Waveforms use connected display. WAV input may be 8, 16, 24 or 32-bit "
+        L"integer PCM or 32/64-bit float, mono or stereo. A stereo file shows its left "
+        L"channel in the upper panel and its right channel in the lower panel; the two "
+        L"panels then share frames, zoom and marks. A stereo file in FFT-amplitude mode "
+        L"must be the only open file; with one in binary-short mode no file may use "
+        L"FFT-amplitude mode.\n\n"
         L"Marks and Save As\n"
         L"Right-click a waveform twice to mark a range; a third click clears it. "
         L"Save As exports slot 0 from the upper marked panel, otherwise the lower, as WAV.\n\n"
@@ -1287,8 +1661,15 @@ void WinsapApp::ShowHelpTopics(HWND hwnd)
         L"Zoom In/Out changes the visible window. Expand/Compress changes waveform "
         L"amplitude limits. Frame, count, and zoom requests are clamped to file bounds.\n\n"
         L"Playback\n"
-        L"Play Up/Down plays the marked range from slot 0. Play All plays every open "
-        L"binary-short slot, upper then lower. Stop or right-click stops and clears the queue.\n\n"
+        L"Play All plays every open file in turn, upper then lower. Play Up/Down plays "
+        L"the marked area of the first file in that panel with data there. Clicking a "
+        L"file name plays the whole file. A stereo file always plays in stereo from these. "
+        L"Right-click a file name for a menu: Close file, Play marked area, and for a "
+        L"stereo file also Play this channel and Play marked area in this channel. "
+        L"FFT-amplitude files play the same way, with the cursor running over "
+        L"the spectrogram; the marked "
+        L"block shows as white edge lines on the spectrogram. "
+        L"Stop or right-click stops and clears the queue.\n\n"
         L"Rates and spectrograms\n"
         L"WAV files use their embedded rate; raw PCM uses Set Raw Samplingrate. "
         L"Spectrogram Contrast changes the dB range and Colour Map cycles palettes.\n\n"
@@ -1370,41 +1751,19 @@ LRESULT WinsapApp::OnCommand(HWND hwnd, WPARAM wParam, LPARAM lParam)
         break;
 
     case ID_TOOLS_MOVEFRAMEBACKWARD:  // Move backward 1 frame
-        if (m_upperPanel.IsActive()) {
-            m_upperPanel.SetFrameBegin(m_upperPanel.GetFrameBegin() - 1);
-            SyncLockedLowerStart();
-            m_updateType = upAll;
-            InvalidateRect(hwnd, nullptr, FALSE);
-        }
+        MovePanels(hwnd, -1, false);
         break;
 
     case ID_TOOLS_MOVEFRAMEFORWARD:  // Move forward 1 frame
-        if (m_upperPanel.IsActive()) {
-            m_upperPanel.SetFrameBegin(m_upperPanel.GetFrameBegin() + 1);
-            SyncLockedLowerStart();
-            m_updateType = upAll;
-            InvalidateRect(hwnd, nullptr, FALSE);
-        }
+        MovePanels(hwnd, 1, false);
         break;
 
     case ID_TOOLS_FASTBACKWARD:  // Fast backward (10 frames)
-        if (m_upperPanel.IsActive()) {
-            m_upperPanel.SetFrameBegin(
-                m_upperPanel.GetFrameBegin() - m_upperPanel.GetFrameSkip());
-            SyncLockedLowerStart();
-            m_updateType = upAll;
-            InvalidateRect(hwnd, nullptr, FALSE);
-        }
+        MovePanels(hwnd, -1, true);
         break;
 
     case ID_TOOLS_FASTFORWARD:  // Fast forward (frameSkip frames)
-        if (m_upperPanel.IsActive()) {
-            m_upperPanel.SetFrameBegin(
-                m_upperPanel.GetFrameBegin() + m_upperPanel.GetFrameSkip());
-            SyncLockedLowerStart();
-            m_updateType = upAll;
-            InvalidateRect(hwnd, nullptr, FALSE);
-        }
+        MovePanels(hwnd, 1, true);
         break;
 
     case ID_TOOLS_ZOOMIN:  // Zoom in (halve visible frames)
@@ -1882,6 +2241,10 @@ LRESULT WinsapApp::OnCommand(HWND hwnd, WPARAM wParam, LPARAM lParam)
                 if (!target.IsFileOpen(i)) {
                     continue;
                 }
+                // The right channel of a stereo file came back with its left one
+                if (panel == 1 && target.IsStereoChannel(i)) {
+                    continue;
+                }
 
                 WCHAR fileName[MAXFILENAME];
                 wcscpy_s(fileName, target.GetFileName(i));
@@ -1895,6 +2258,10 @@ LRESULT WinsapApp::OnCommand(HWND hwnd, WPARAM wParam, LPARAM lParam)
                 }
 
                 target.CloseFile(i);
+                if (panel == 0 && m_lowerPanel.IsStereoChannel(i)) {
+                    // The stereo file is reopened as a whole from its upper slot
+                    m_lowerPanel.CloseFile(i);
+                }
                 if (panel == 0) {
                     SetupFileUp(hwnd, fileName, i, fileType);
                 }
@@ -2111,6 +2478,10 @@ void WinsapApp::InitializeGDI(HWND hwnd)
     m_memdc = CreateCompatibleDC(hdc);
     m_hbit = CreateCompatibleBitmap(hdc, maxX, maxY);
     m_hOldBitmap = (HBITMAP)SelectObject(m_memdc, m_hbit);
+    if (m_hbit) {
+        m_hbitWidth = maxX;
+        m_hbitHeight = maxY;
+    }
 
     // Get black brush and select it
     m_hbrush = (HBRUSH)GetStockObject(BLACK_BRUSH);
@@ -2249,12 +2620,52 @@ void WinsapApp::OnDpiChanged(HWND hwnd, WPARAM wParam, LPARAM lParam)
     m_toolbarManager.RecreateToolbar(hwnd);
     m_toolbarManager.ApplyMenuIcons(m_hMenu);
 
+    // The new monitor may be larger than any the backbuffer has covered
+    EnsureBackBuffer(hwnd);
+
     // Resize desktop
     ResizeDesktop(hwnd);
 
     // Redraw
     m_updateType = upAll;
     InvalidateRect(hwnd, nullptr, TRUE);
+}
+
+// ===================== Ensure Back Buffer =======================
+// The backbuffer starts at primary screen size, but a client on a larger
+// secondary monitor, or after a resolution change, can outgrow it. It only
+// ever grows, so ordinary resizing does not reallocate. If the larger bitmap
+// cannot be created the old one stays selected and drawing is clipped rather
+// than lost.
+void WinsapApp::EnsureBackBuffer(HWND hwnd)
+{
+    if (!m_memdc) return;
+
+    RECT rc;
+    if (!GetClientRect(hwnd, &rc)) return;
+
+    int width = rc.right - rc.left;
+    int height = rc.bottom - rc.top;
+    if (width < m_hbitWidth) width = m_hbitWidth;
+    if (height < m_hbitHeight) height = m_hbitHeight;
+    if (width <= 0 || height <= 0) return;
+    if (m_hbit && width == m_hbitWidth && height == m_hbitHeight) return;
+
+    HDC hdc = GetDC(hwnd);
+    HBITMAP hbit = CreateCompatibleBitmap(hdc, width, height);
+    ReleaseDC(hwnd, hdc);
+    if (!hbit) return;
+
+    SelectObject(m_memdc, hbit);
+    if (m_hbit) {
+        DeleteObject(m_hbit);
+    }
+    m_hbit = hbit;
+    m_hbitWidth = width;
+    m_hbitHeight = height;
+
+    RECT fill = { 0, 0, width, height };
+    FillRect(m_memdc, &fill, (HBRUSH)GetStockObject(BLACK_BRUSH));
 }
 
 // ===================== Initialize Pens =======================
@@ -2546,16 +2957,17 @@ bool WinsapApp::OpenFileDown(HWND hwnd)
             return false;  // Conflict - user chose to abort
         }
 
-        // Find available slot
+        // Find available slot. While a stereo file is open the lower panel only
+        // takes another stereo file, which picks its own slot.
         int index = -1;
-        for (int i = 0; i < PANELMAXFILE; i++) {
+        for (int i = 0; i < PANELMAXFILE && !StereoActive(); i++) {
             if (m_lowerPanel.GetFlags()[i] == 0) {
                 index = i;
                 break;
             }
         }
 
-        if (index == -1) {
+        if (index == -1 && !StereoActive()) {
             // Use last slot, close existing file
             index = PANELMAXFILE - 1;
             m_lowerPanel.CloseFile(index);
@@ -2661,8 +3073,11 @@ void WinsapApp::SetupFileUp(HWND hwnd, const WCHAR* fileName, int index, int fil
         return;
     }
 
-    // Note: File mode is now provided by the user via the dialog
-    // No longer auto-detecting parameter files here
+    // Parameter mode and the .par extension are tied together, so a .par file
+    // opens as parameters whichever mode the caller chose or remembered.
+    if (IsParameterFileName(fileName)) {
+        fileMode = ftParameter;
+    }
 
     // Test if the file is a WAV file
     BOOL isWav = FALSE;
@@ -2670,6 +3085,7 @@ void WinsapApp::SetupFileUp(HWND hwnd, const WCHAR* fileName, int index, int fil
     DWORD wavDataLength = 0;
     DWORD samplingRate = m_samplingRate;
     unsigned short channels = 1;
+    int sampleFormat = wavPcm16;
 
     fread(&la, 1, 4, fp);
     if (la == 0x46464952) {  // 'RIFF'
@@ -2677,12 +3093,21 @@ void WinsapApp::SetupFileUp(HWND hwnd, const WCHAR* fileName, int index, int fil
         filesize += ftell(fp);
         fread(&la, 1, 4, fp);
         if (la == 0x45564157) {  // 'WAVE'
-            if (ReadWavFile(fp, &headerLength, &wavDataLength, &samplingRate, &channels)) {
-                // Check for stereo - reject if not mono
-                if (channels > 1) {
+            if (ReadWavFile(fp, &headerLength, &wavDataLength, &samplingRate, &channels,
+                            &sampleFormat)) {
+                // A stereo file is split over both panels; more channels are rejected
+                if (channels > 2) {
                     fclose(fp);
-                    MessageBox(hwnd, L"Stereo WAV files are not supported.\nPlease convert to mono first.",
+                    MessageBox(hwnd, L"Only mono and stereo WAV files are supported.",
                               L"Unsupported Format", MB_OK | MB_ICONWARNING);
+                    return;
+                }
+                if (sampleFormat == wavUnsupported) {
+                    fclose(fp);
+                    MessageBox(hwnd, L"This WAV sample format is not supported.\n"
+                                     L"Supported formats are 8, 16, 24 and 32-bit integer PCM "
+                                     L"and 32 or 64-bit float.",
+                               L"Unsupported Format", MB_OK | MB_ICONWARNING);
                     return;
                 }
                 // WAV files are always binary - override parameter mode if selected
@@ -2696,11 +3121,20 @@ void WinsapApp::SetupFileUp(HWND hwnd, const WCHAR* fileName, int index, int fil
 
     fclose(fp);
 
+    if (isWav && channels == 2) {
+        OpenStereoFile(hwnd, fileName, index, fileMode, headerLength, wavDataLength,
+                       samplingRate, sampleFormat);
+        return;
+    }
+    if (!AllowMonoOpenWithStereo(hwnd, fileMode)) {
+        return;
+    }
+
     // Setup the file in the panel. Binary samples are loaded once and the file
     // handle is closed before this function returns.
     if (!m_upperPanel.OpenFile(index, fileName, fileMode,
                                headerLength, static_cast<long>(wavDataLength),
-                               isWav, samplingRate)) {
+                               isWav, samplingRate, sampleFormat)) {
         wsprintf(wOut, L"Cannot load file %s!", fileName);
         MessageBox(hwnd, wOut, L"ERROR", MB_OK | MB_ICONERROR);
         return;
@@ -2739,8 +3173,11 @@ void WinsapApp::SetupFileDown(HWND hwnd, const WCHAR* fileName, int index, int f
         return;
     }
 
-    // Note: File mode is now provided by the user via the dialog
-    // No longer auto-detecting parameter files here
+    // Parameter mode and the .par extension are tied together, so a .par file
+    // opens as parameters whichever mode the caller chose or remembered.
+    if (IsParameterFileName(fileName)) {
+        fileMode = ftParameter;
+    }
 
     // Test if the file is a WAV file
     BOOL isWav = FALSE;
@@ -2748,6 +3185,7 @@ void WinsapApp::SetupFileDown(HWND hwnd, const WCHAR* fileName, int index, int f
     DWORD wavDataLength = 0;
     DWORD samplingRate = m_samplingRate;
     unsigned short channels = 1;
+    int sampleFormat = wavPcm16;
 
     fread(&la, 1, 4, fp);
     if (la == 0x46464952) {  // 'RIFF'
@@ -2755,12 +3193,21 @@ void WinsapApp::SetupFileDown(HWND hwnd, const WCHAR* fileName, int index, int f
         filesize += ftell(fp);
         fread(&la, 1, 4, fp);
         if (la == 0x45564157) {  // 'WAVE'
-            if (ReadWavFile(fp, &headerLength, &wavDataLength, &samplingRate, &channels)) {
-                // Check for stereo - reject if not mono
-                if (channels > 1) {
+            if (ReadWavFile(fp, &headerLength, &wavDataLength, &samplingRate, &channels,
+                            &sampleFormat)) {
+                // A stereo file is split over both panels; more channels are rejected
+                if (channels > 2) {
                     fclose(fp);
-                    MessageBox(hwnd, L"Stereo WAV files are not supported.\nPlease convert to mono first.",
+                    MessageBox(hwnd, L"Only mono and stereo WAV files are supported.",
                               L"Unsupported Format", MB_OK | MB_ICONWARNING);
+                    return;
+                }
+                if (sampleFormat == wavUnsupported) {
+                    fclose(fp);
+                    MessageBox(hwnd, L"This WAV sample format is not supported.\n"
+                                     L"Supported formats are 8, 16, 24 and 32-bit integer PCM "
+                                     L"and 32 or 64-bit float.",
+                               L"Unsupported Format", MB_OK | MB_ICONWARNING);
                     return;
                 }
                 // WAV files are always binary - override parameter mode if selected
@@ -2774,9 +3221,23 @@ void WinsapApp::SetupFileDown(HWND hwnd, const WCHAR* fileName, int index, int f
 
     fclose(fp);
 
+    // A stereo file always opens with its left channel up and right channel down
+    if (isWav && channels == 2) {
+        OpenStereoFile(hwnd, fileName, -1, fileMode, headerLength, wavDataLength,
+                       samplingRate, sampleFormat);
+        return;
+    }
+    if (StereoActive() || index < 0) {
+        MessageBox(hwnd, L"The lower panel shows the right channels of the open stereo "
+                         L"files.\nClose the stereo files before opening a mono file in "
+                         L"the lower panel.",
+                   L"Open Down", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
     if (!m_lowerPanel.OpenFile(index, fileName, fileMode,
                                headerLength, static_cast<long>(wavDataLength),
-                               isWav, samplingRate)) {
+                               isWav, samplingRate, sampleFormat)) {
         wsprintf(wOut, L"Cannot load file %s!", fileName);
         MessageBox(hwnd, wOut, L"ERROR", MB_OK | MB_ICONERROR);
         return;
@@ -2809,7 +3270,6 @@ void WinsapApp::ProcessCommandLine(HWND hwnd)
     int num = 0;  // Argument index (0, 1, 2, ...)
     int index;
     WCHAR str[MAX_PATH];
-    WCHAR* p;
 
     // Parse command line arguments
     while (*cmdLine != L'\0') {
@@ -2818,17 +3278,33 @@ void WinsapApp::ProcessCommandLine(HWND hwnd)
             cmdLine++;
         }
 
-        // Extract next argument into str
-        p = str;
-        while ((*cmdLine != L'\0') && (*cmdLine != L' ')) {
-            *p++ = *cmdLine++;
+        // Extract next argument into str. Explorer quotes paths containing
+        // spaces, so a quoted argument runs to its closing quote. Characters
+        // past the buffer are skipped, not copied, and reported as too long.
+        const bool quoted = *cmdLine == L'"';
+        if (quoted) {
+            cmdLine++;
         }
-        *p = L'\0';
+        size_t length = 0;
+        bool tooLong = false;
+        while ((*cmdLine != L'\0') && (*cmdLine != (quoted ? L'"' : L' '))) {
+            if (length < _countof(str) - 1) {
+                str[length++] = *cmdLine;
+            }
+            else {
+                tooLong = true;
+            }
+            cmdLine++;
+        }
+        if (quoted && *cmdLine == L'"') {
+            cmdLine++;
+        }
+        str[length] = L'\0';
 
         // Process the argument if non-empty
         if (str[0] != L'\0') {
             // Check filename length
-            if ((int)wcslen(str) > MAXFILENAME) {
+            if (tooLong || length > MAXFILENAME) {
                 MessageBox(hwnd, L"Command line file name is too long!", L"ERROR",
                           MB_OK | MB_ICONERROR);
             }
@@ -2855,8 +3331,7 @@ void WinsapApp::ProcessCommandLine(HWND hwnd)
 // ===================== Play Commands =======================
 bool WinsapApp::PlayWholeFile(HWND hwnd, Panel& panel, int fileIndex)
 {
-    if (!panel.IsFileOpen(fileIndex) ||
-        panel.GetFileType(fileIndex) != ftBinaryShort) {
+    if (!panel.IsFileOpen(fileIndex) || !IsPlayableFileType(panel.GetFileType(fileIndex))) {
         return false;
     }
 
@@ -2865,24 +3340,67 @@ bool WinsapApp::PlayWholeFile(HWND hwnd, Panel& panel, int fileIndex)
         return false;
     }
 
-    // A wav plays at the rate stored in its own header. The raw PCM default is
-    // a separate setting and must survive playing a wav.
-    DWORD playRate = m_samplingRate;
-    if (panel.GetIsWavFlags()[fileIndex]) {
-        playRate = panel.GetSamplingRates()[fileIndex];
-    }
+    // Playing either channel of a stereo file plays the file in stereo
+    return PlayFileRange(hwnd, panel, fileIndex, 0, totalSamples, FilePlayRate(panel, fileIndex),
+                         panel.IsStereoChannel(fileIndex));
+}
 
-    return PlayFileRange(hwnd, panel, fileIndex, 0, totalSamples, playRate);
+// A wav plays at the rate stored in its own header. The raw PCM default is a
+// separate setting and must survive playing a wav.
+DWORD WinsapApp::FilePlayRate(Panel& panel, int fileIndex) const
+{
+    return panel.GetIsWavFlags()[fileIndex] ? panel.GetSamplingRates()[fileIndex]
+                                            : m_samplingRate;
+}
+
+bool WinsapApp::MarkedAreaHasData(Panel& panel, int fileIndex)
+{
+    if (!panel.IsFileOpen(fileIndex) || panel.GetMarkType() != mtAll) {
+        return false;
+    }
+    const long listenBegin = panel.GetListenBegin();
+    const long listenEnd = panel.GetListenEnd();
+    return listenEnd > listenBegin && listenBegin >= 0 &&
+           static_cast<size_t>(listenBegin) < panel.GetAudioSampleCount(fileIndex);
+}
+
+bool WinsapApp::PlayMarkedArea(HWND hwnd, Panel& panel, int fileIndex, bool stereo)
+{
+    if (!IsPlayableFileType(panel.GetFileType(fileIndex)) ||
+        !MarkedAreaHasData(panel, fileIndex)) {
+        return false;
+    }
+    const long listenBegin = panel.GetListenBegin();
+    const long listenEnd = panel.GetListenEnd();
+    return PlayFileRange(hwnd, panel, fileIndex, static_cast<size_t>(listenBegin),
+                         static_cast<size_t>(listenEnd - listenBegin),
+                         FilePlayRate(panel, fileIndex),
+                         stereo && panel.IsStereoChannel(fileIndex));
 }
 
 bool WinsapApp::PlayFileRange(HWND hwnd, Panel& panel, int fileIndex,
-                              size_t startSample, size_t sampleCount, DWORD samplingRate)
+                              size_t startSample, size_t sampleCount, DWORD samplingRate,
+                              bool stereo)
 {
     if (m_audioPlayer.IsPlaying()) {
         return false;
     }
 
-    const std::vector<int16_t>& samples = panel.GetAudioSamples(fileIndex);
+    // A stereo file plays its left channel from the upper panel and its right
+    // channel from the lower one, with the cursor running in both.
+    Panel* partner = nullptr;
+    if (stereo) {
+        partner = (&panel == &m_upperPanel) ? &m_lowerPanel : &m_upperPanel;
+        if (!m_upperPanel.IsStereoChannel(fileIndex) || !m_lowerPanel.IsStereoChannel(fileIndex) ||
+            m_upperPanel.GetAudioSampleCount(fileIndex) !=
+                m_lowerPanel.GetAudioSampleCount(fileIndex)) {
+            return false;
+        }
+    }
+    const std::vector<int16_t>& samples =
+        stereo ? m_upperPanel.GetAudioSamples(fileIndex) : panel.GetAudioSamples(fileIndex);
+    const int16_t* rightSamples =
+        stereo ? m_lowerPanel.GetAudioSamples(fileIndex).data() + startSample : nullptr;
     if (samplingRate == 0 || startSample >= samples.size()) {
         return false;
     }
@@ -2894,14 +3412,16 @@ bool WinsapApp::PlayFileRange(HWND hwnd, Panel& panel, int fileIndex,
     HWND hwndStatus = m_toolbarManager.GetStatuslineHandle();
 
     panel.SetPlaybackCursorSample(startSample);
+    if (partner) partner->SetPlaybackCursorSample(startSample);
     InvalidateRect(hwnd, nullptr, FALSE);
 
     bool completionCalled = false;
     m_audioPlayer.PlaySamples(
         hwnd, samples.data() + startSample, sampleCount, fileName, samplingRate,
-        [this, hwnd, hwndStatus, &panel, fileName, samplingRate, startSample](size_t playedSamples) {
+        [this, hwnd, hwndStatus, &panel, partner, fileName, samplingRate, startSample](size_t playedSamples) {
             const int64_t currentSample = static_cast<int64_t>(startSample) + playedSamples;
             panel.SetPlaybackCursorSample(currentSample);
+            if (partner) partner->SetPlaybackCursorSample(currentSample);
 
             const int64_t totalMilliseconds = currentSample * 1000 / samplingRate;
             const int64_t hours = totalMilliseconds / 3600000;
@@ -2920,12 +3440,15 @@ bool WinsapApp::PlayFileRange(HWND hwnd, Panel& panel, int fileIndex,
 
             InvalidateRect(hwnd, nullptr, FALSE);
         },
-        [this, hwnd, &panel, &completionCalled](bool completed) {
+        [this, hwnd, &panel, partner, &completionCalled](bool completed) {
             completionCalled = true;
+            if (partner) partner->ClearPlaybackCursor();
             FinishPlayback(hwnd, panel, completed);
-        });
+        },
+        rightSamples);
 
     if (!completionCalled) {
+        if (partner) partner->ClearPlaybackCursor();
         FinishPlayback(hwnd, panel, false);
     }
     return completionCalled;
@@ -2979,7 +3502,9 @@ void WinsapApp::PlayAll(HWND hwnd)
     m_playbackQueue.clear();
     for (Panel* panel : { &m_upperPanel, &m_lowerPanel }) {
         for (int i = 0; i < PANELMAXFILE; ++i) {
-            if (panel->IsFileOpen(i) && panel->GetFileType(i) == ftBinaryShort) {
+            if (panel->IsFileOpen(i) && IsPlayableFileType(panel->GetFileType(i))) {
+                // A stereo file plays once, in stereo, from its upper slot
+                if (panel == &m_lowerPanel && panel->IsStereoChannel(i)) continue;
                 m_playbackQueue.push_back({ panel, i });
             }
         }
@@ -2989,56 +3514,34 @@ void WinsapApp::PlayAll(HWND hwnd)
 
 void WinsapApp::PlayUp(HWND hwnd)
 {
-    m_playbackQueue.clear();
-    // Play marked region in upper panel
-    if (!m_upperPanel.IsActive()) return;
-
-    MarkType markType = m_upperPanel.GetMarkType();
-    if (markType != mtAll) return;
-
-    long listenBegin = m_upperPanel.GetListenBegin();
-    long listenEnd = m_upperPanel.GetListenEnd();
-    if (listenEnd - listenBegin < 1) return;
-
-    int* fileTypes = m_upperPanel.GetFileTypes();
-    if (fileTypes[0] != ftBinaryShort) return;
-
-    // A wav plays at its own rate, but the raw PCM default is a separate
-    // setting and must not be overwritten here.
-    BOOL* isWavFlags = m_upperPanel.GetIsWavFlags();
-    DWORD* samplingRates = m_upperPanel.GetSamplingRates();
-    DWORD playRate = isWavFlags[0] ? samplingRates[0] : m_samplingRate;
-
-    // Play the marked region
-    PlayFileRange(hwnd, m_upperPanel, 0, static_cast<size_t>(listenBegin),
-                  static_cast<size_t>(listenEnd - listenBegin), playRate);
+    PlayPanelMark(hwnd, m_upperPanel);
 }
 
 void WinsapApp::PlayDown(HWND hwnd)
 {
+    PlayPanelMark(hwnd, m_lowerPanel);
+}
+
+// Plays the marked area of the first file in the panel that has data there; a
+// stereo file plays both channels.
+void WinsapApp::PlayPanelMark(HWND hwnd, Panel& panel)
+{
     m_playbackQueue.clear();
-    // Play marked region in lower panel
-    if (!m_lowerPanel.IsActive()) return;
+    if (!panel.IsActive()) return;
 
-    MarkType markType = m_lowerPanel.GetMarkType();
-    if (markType != mtAll) return;
-
-    long listenBegin = m_lowerPanel.GetListenBegin();
-    long listenEnd = m_lowerPanel.GetListenEnd();
-    if (listenEnd - listenBegin < 1) return;
-
-    int* fileTypes = m_lowerPanel.GetFileTypes();
-    if (fileTypes[0] != ftBinaryShort) return;
-
-    // A wav plays at its own rate, but the raw PCM default is a separate
-    // setting and must not be overwritten here.
-    BOOL* isWavFlags = m_lowerPanel.GetIsWavFlags();
-    DWORD* samplingRates = m_lowerPanel.GetSamplingRates();
-    DWORD playRate = isWavFlags[0] ? samplingRates[0] : m_samplingRate;
-
-    // Play the marked region
-    PlayFileRange(hwnd, m_lowerPanel, 0, static_cast<size_t>(listenBegin),
-                  static_cast<size_t>(listenEnd - listenBegin), playRate);
+    if (panel.GetMarkType() != mtAll || panel.GetListenEnd() <= panel.GetListenBegin()) {
+        m_toolbarManager.UpdateStatusline(L"Mark an area first: right-click the waveform at "
+                                          L"its start and its end.", STATUSBAR_FILE_INFO);
+        return;
+    }
+    for (int i = 0; i < PANELMAXFILE; i++) {
+        if (IsPlayableFileType(panel.GetFileType(i)) && MarkedAreaHasData(panel, i)) {
+            PlayMarkedArea(hwnd, panel, i, true);
+            return;
+        }
+    }
+    m_toolbarManager.UpdateStatusline(L"No open file has data in the marked area.",
+                                      STATUSBAR_FILE_INFO);
 }
 
 // ===================== Select Files Dialog =======================

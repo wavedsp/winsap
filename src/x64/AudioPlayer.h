@@ -36,17 +36,20 @@ public:
     AudioPlayer();
     ~AudioPlayer();
 
+    // rightSamples, when given, holds a second channel of the same length and
+    // the two are played as one stereo stream.
     bool PlaySamples(HWND hwnd, const int16_t* samples, size_t sampleCount,
                      const wchar_t* fileName, DWORD samplingRate,
                      const PlaybackProgressCallback& progressCallback = {},
-                     const PlaybackCompletionCallback& completionCallback = {});
+                     const PlaybackCompletionCallback& completionCallback = {},
+                     const int16_t* rightSamples = nullptr);
 
     // Stop playback
     void Stop();
     bool IsPlaying() const { return m_playing; }
 
 private:
-    bool OpenOutputDevice(HWND hwnd, DWORD rate);
+    bool OpenOutputDevice(HWND hwnd, DWORD rate, WORD channels);
     void CloseOutputDevice();
     void AllocateBuffers();
     void CleanupBuffers();

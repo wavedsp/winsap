@@ -7,6 +7,7 @@
  *  PURPOSE: Main application class that manages panels and UI
  *
  *  Update:   2025.4
+ *            2026.11 Backbuffer grows with the client
  *
  ************************************************************************/
 
@@ -161,6 +162,7 @@ private:
     void StopPlayback(HWND hwnd, const wchar_t* status);
     void ShowHelpTopics(HWND hwnd);
     void SyncLockedLowerStart();
+    void MovePanels(HWND hwnd, int direction, bool bySkip);
 
     // DPI handling
     void InitializeDpi(HWND hwnd);
@@ -169,6 +171,7 @@ private:
 
     // Drawing initialization
     void InitializeGDI(HWND hwnd);
+    void EnsureBackBuffer(HWND hwnd);
     void InitializePens();
     void InitializeBrushes();
 
@@ -216,6 +219,8 @@ private:
     // GDI objects
     HDC m_memdc;
     HBITMAP m_hbit;
+    int m_hbitWidth = 0;   // pixels
+    int m_hbitHeight = 0;  // pixels
     HBITMAP m_hOldBitmap;
     HBRUSH m_hbrush;
     HPEN m_hOldpen;

@@ -76,4 +76,7 @@ private:
     // Auto-select file mode based on filter selection
     static void AutoSelectMode(HWND hdlg, int filterIndex);
 
+    // Switch the file type filter to match the selected file mode
+    static void SyncFilterToMode(HWND hdlg);
+
 };

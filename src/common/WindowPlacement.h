@@ -7,6 +7,7 @@
  *  PURPOSE: Restore the main window to its last monitor and position.
  *
  *  Update:   2026.9
+ *             2026.11 Saved bounds are screen coordinates; rcNormalPosition is converted from workspace coordinates
  *
  ************************************************************************/
 
@@ -181,15 +182,21 @@ inline void SaveWindowBounds(HWND window)
     WINDOWPLACEMENT placement = {};
     placement.length = sizeof(placement);
     RECT rect = {};
+    const HMONITOR monitor =
+        MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
+    const MONITORINFOEXW info = GetMonitorDetails(monitor);
     if (GetWindowPlacement(window, &placement)) {
+        // rcNormalPosition is in workspace coordinates, which are offset from
+        // screen coordinates by any taskbar along the top or left edge of the
+        // window's monitor. Everything saved here, and the CreateWindow call
+        // that consumes it, is in screen coordinates, so convert once here;
+        // otherwise every save and restore creeps by the taskbar size.
         rect = placement.rcNormalPosition;
+        OffsetRect(&rect, info.rcWork.left - info.rcMonitor.left,
+                   info.rcWork.top - info.rcMonitor.top);
     } else {
         GetWindowRect(window, &rect);
     }
-
-    const HMONITOR monitor =
-        MonitorFromRect(&rect, MONITOR_DEFAULTTONEAREST);
-    const MONITORINFOEXW info = GetMonitorDetails(monitor);
 
     HKEY key = nullptr;
     DWORD disposition = 0;

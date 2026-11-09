@@ -8,6 +8,8 @@
  *
  *  Update:   2025.4 Update the code base
  *            2026.1 Porting to C++
+ *            2026.11 Per slot, bounds checked parameter frame index; FFT buffer length counted in samples
+ *            2026.11 Sparse parameter frame index, no 40000 frame limit
  *
  ************************************************************************/
 
@@ -18,6 +20,7 @@
 #include <string.h>
 #include <cmath>
 #include <algorithm>
+#include <cstdlib>
 #include <climits>
 
 // ===================== Constructor =======================
@@ -55,6 +58,8 @@ Panel::Panel()
         m_fileLength[i] = 0;
         m_audioDataLength[i] = 0;
         m_isWav[i] = FALSE;
+        m_sampleFormat[i] = wavPcm16;
+        m_tempDataFile[i][0] = L'\0';
         m_fileHeaderLength[i] = 0;
         m_samplingRate[i] = 0;
         m_fileBufHead[i] = 0;
@@ -65,11 +70,6 @@ Panel::Panel()
         m_fileIndent[i] = 0;
         m_fileUpLimit[i] = 32768.0f;
         m_fileLowLimit[i] = -32768.0f;
-    }
-
-    // Initialize parameter index
-    for (int i = 0; i < 40000; i++) {
-        m_parameterIndex[i] = 0;
     }
 
     // Initialize FFT buffers
@@ -219,7 +219,8 @@ void Panel::ViewAll()
 
 // ===================== File Management =======================
 bool Panel::OpenFile(int index, const WCHAR* fileName, int fileType,
-                     long dataOffset, long dataLength, BOOL isWav, DWORD samplingRate)
+                     long dataOffset, long dataLength, BOOL isWav, DWORD samplingRate,
+                     int sampleFormat, const WCHAR* dataFileName)
 {
     if (index < 0 || index >= PANELMAXFILE) {
         return false;
@@ -231,9 +232,14 @@ bool Panel::OpenFile(int index, const WCHAR* fileName, int fileType,
 
     // Copy file name
     wcsncpy_s(m_fileName[index], MAXFILENAME, fileName, _TRUNCATE);
+    if (dataFileName != nullptr) {
+        // The panel owns the converted copy from here on, even if opening fails
+        wcsncpy_s(m_tempDataFile[index], MAX_PATH, dataFileName, _TRUNCATE);
+    }
 
     // Open file based on type
-    if (_wfopen_s(&m_fp[index], fileName, L"rb") != 0) {
+    if (_wfopen_s(&m_fp[index], GetDataFileName(index), L"rb") != 0) {
+        CloseFile(index);
         return false;
     }
 
@@ -241,6 +247,7 @@ bool Panel::OpenFile(int index, const WCHAR* fileName, int fileType,
     m_flag[index] = 1;
     m_fileType[index] = fileType;
     m_isWav[index] = isWav;
+    m_sampleFormat[index] = isWav ? sampleFormat : wavPcm16;
     m_fileHeaderLength[index] = dataOffset;
     m_samplingRate[index] = samplingRate;
 
@@ -286,8 +293,11 @@ bool Panel::OpenFile(int index, const WCHAR* fileName, int fileType,
         }
 
         m_bufActive[index] = 1;
+        // The buffer holds the whole physical file, but the line spectrum
+        // indexes it in samples from the start of the audio data, so record
+        // the extent in those units rather than in bytes.
         m_fileBufHead[index] = 0;
-        m_fileBufLen[index] = m_fileLength[index];
+        m_fileBufLen[index] = static_cast<int>(m_audioDataLength[index] / sizeof(short));
     }
 
     // Handle parameter files - requires full file buffering
@@ -344,11 +354,16 @@ void Panel::CloseFile(int index)
         fclose(m_fp[index]);
         m_fp[index] = nullptr;
     }
+    if (m_tempDataFile[index][0] != L'\0') {
+        _wremove(m_tempDataFile[index]);
+        m_tempDataFile[index][0] = L'\0';
+    }
 
     if (m_buf[index] != nullptr) {
         delete[] m_buf[index];
         m_buf[index] = nullptr;
     }
+    m_parameterIndex[index].clear();
 
     m_flag[index] = 0;
     m_bufActive[index] = 0;
@@ -1031,15 +1046,17 @@ void Panel::DrawFrameInfo(const DrawContext& ctx)
     WCHAR out[256];
 
     // Position constants (character positions from left edge)
+    // Frame numbers take 10 columns (PARAMETER_MAX_FRAMES has 10 digits) and
+    // times 13 (hhh:mm:ss.mmm); GetFileIndexAtPosition repeats the filename column.
     const int FRAME_NUMBER_START_POS = 7;
-    const int FRAME_SEPARATOR_POS = 16;
-    const int FRAME_NUMBER_END_POS = 20;
-    const int FRAME_SIZE_LABEL_POS = 29;
-    const int FRAME_SIZE_POS = 39;
-    const int START_TIME_POS = 46;
-    const int TIME_SEPARATOR_POS = 59;
-    const int END_TIME_POS = 63;
-    const int FILENAME_START_POS = 77;
+    const int FRAME_SEPARATOR_POS = 18;
+    const int FRAME_NUMBER_END_POS = 22;
+    const int FRAME_SIZE_LABEL_POS = 33;
+    const int FRAME_SIZE_POS = 43;
+    const int START_TIME_POS = 50;
+    const int TIME_SEPARATOR_POS = 64;
+    const int END_TIME_POS = 68;
+    const int FILENAME_START_POS = 82;
 
     // Set cyan color for frame info
     COLORREF oldColor = SetTextColor(ctx.memDC, RGB(0, 255, 255));
@@ -1062,11 +1079,11 @@ void Panel::DrawFrameInfo(const DrawContext& ctx)
     SetTextColor(ctx.memDC, RGB(255, 255, 255));
 
     // Draw start frame number
-    swprintf_s(out, 256, L"%8d", m_frameBegin);
+    swprintf_s(out, 256, L"%10d", m_frameBegin);
     TextOut(ctx.memDC, panelBox.a.x + FRAME_NUMBER_START_POS * ctx.charWidth, yPos, out, (int)wcslen(out));
 
     // Draw end frame number
-    swprintf_s(out, 256, L"%8d", m_frameBegin + m_frameNum);
+    swprintf_s(out, 256, L"%10d", m_frameBegin + m_frameNum);
     TextOut(ctx.memDC, panelBox.a.x + FRAME_NUMBER_END_POS * ctx.charWidth, yPos, out, (int)wcslen(out));
 
     // Draw frame size
@@ -1142,8 +1159,8 @@ int Panel::GetFileIndexAtPosition(int xPos, int yPos, const DrawContext& ctx) co
         return -1;  // Not in Frame= line
     }
 
-    // Filename starts after the frame and time interval fields.
-    const int FILENAME_START_POS = 77;
+    // Filename starts after the frame and time interval fields (see DrawFrameInfo).
+    const int FILENAME_START_POS = 82;
     int startX = panelBox.a.x + FILENAME_START_POS * ctx.charWidth;
 
     // Check if X position is in filename area
@@ -1522,6 +1539,14 @@ void Panel::DrawPlaybackCursor(const DrawContext& ctx)
 
 // ===================== Parameter File Support =======================
 
+// Frame number after "FRAME=" with atol() rules, or -1 when it is negative,
+// overflows or reaches PARAMETER_MAX_FRAMES.
+static long ParseFrameNumber(const char* text)
+{
+    const long frame = strtol(text, nullptr, 10);
+    return (frame >= 0 && frame < PARAMETER_MAX_FRAMES) ? frame : -1;
+}
+
 /*****************************************************************************
  * ParFileTotal
  *
@@ -1534,8 +1559,7 @@ long Panel::ParFileTotal(FILE* fp)
     char buf[1001];
     char* p;
     long fileLen, seekPos;
-    long frameNum = 0;
-    long maxFrame = 0;
+    long maxFrame = -1;
 
     // Get file length
     fseek(fp, 0L, SEEK_END);
@@ -1553,52 +1577,42 @@ long Panel::ParFileTotal(FILE* fp)
     p = buf;
     while (*p != '\0') {
         if (strncmp(p, "FRAME=", 6) == 0) {
-            // Extract frame number
-            p += 6;
-            while (*p == ' ' || *p == '\t') p++;  // Skip whitespace
-            frameNum = atol(p);
-            if (frameNum > maxFrame) {
-                maxFrame = frameNum;
-            }
+            maxFrame = (std::max)(maxFrame, ParseFrameNumber(p + 6));
         }
         // Move to next line
         while (*p != '\0' && *p != '\n') p++;
         if (*p == '\n') p++;
     }
 
-    return maxFrame + 1;  // Frame numbers are 0-based, return count
+    // Frame numbers are 0-based; a file without a usable tag in its tail still
+    // counts frame 0, as it always did.
+    return (std::max)(maxFrame, 0L) + 1;
 }
 
 /*****************************************************************************
  * BuildParameterIndex
  *
  * Build index mapping frame numbers to file byte positions
- * Parses entire parameter file buffer and creates lookup table
+ * Parses entire parameter file buffer; memory follows the FRAME= lines
+ * present, not the highest frame number.
  *
  *****************************************************************************/
 void Panel::BuildParameterIndex(int index)
 {
+    ParameterIndex& frameIndex = m_parameterIndex[index];
+    frameIndex.clear();
     if (!m_buf[index]) return;
 
     char* p = m_buf[index];
     long pos = 0;
-    long frameNum = 0;
-    int indexCount = 0;
-
-    // Initialize index array
-    memset(m_parameterIndex, 0, sizeof(m_parameterIndex));
 
     // Parse through entire buffer
-    while (*p != '\0' && indexCount < 40000) {
+    while (*p != '\0') {
         // Check if line starts with "FRAME="
         if (strncmp(p, "FRAME=", 6) == 0) {
-            // Extract frame number
-            frameNum = atol(p + 6);
-
-            // Store position of this frame
-            if (frameNum >= 0 && frameNum < 40000) {
-                m_parameterIndex[frameNum] = pos;
-                indexCount++;
+            const long frameNum = ParseFrameNumber(p + 6);
+            if (frameNum >= 0) {
+                frameIndex.emplace_back(frameNum, pos);
             }
         }
 
@@ -1612,6 +1626,26 @@ void Panel::BuildParameterIndex(int index)
             pos++;
         }
     }
+
+    // Files are normally written in frame order, so sort only when needed.
+    // The stable sort keeps repeated frames in file order for the pass below.
+    const auto byFrame = [](const std::pair<long, long>& a, const std::pair<long, long>& b) {
+        return a.first < b.first;
+    };
+    if (!std::is_sorted(frameIndex.begin(), frameIndex.end(), byFrame)) {
+        std::stable_sort(frameIndex.begin(), frameIndex.end(), byFrame);
+    }
+
+    // Keep the last occurrence of each repeated frame number, as the old
+    // table overwrite did
+    size_t kept = 0;
+    for (size_t i = 0; i < frameIndex.size(); ++i) {
+        if (i + 1 < frameIndex.size() && frameIndex[i + 1].first == frameIndex[i].first) {
+            continue;
+        }
+        frameIndex[kept++] = frameIndex[i];
+    }
+    frameIndex.resize(kept);
 }
 
 /*****************************************************************************
@@ -1641,8 +1675,8 @@ void Panel::DispParameter(const DrawContext& ctx, int fileIndex)
     }
 
     // Call DispID to render the parameter text
-    DispID(ctx, paramBox, m_buf[fileIndex], m_fileFrameTotal[fileIndex],
-           m_frameBegin, m_parameterIndex);
+    DispID(ctx, paramBox, m_buf[fileIndex], m_fileLength[fileIndex], m_fileFrameTotal[fileIndex],
+           m_frameBegin, m_parameterIndex[fileIndex]);
 }
 
 /*****************************************************************************
@@ -1652,10 +1686,10 @@ void Panel::DispParameter(const DrawContext& ctx, int fileIndex)
  * Uses yellow text color and extracts data from frame index
  *
  *****************************************************************************/
-void Panel::DispID(const DrawContext& ctx, const WRect& box, const char* buf,
-                   long totalFrames, int frameBegin, const long* paramIndex)
+void Panel::DispID(const DrawContext& ctx, const WRect& box, const char* buf, long bufLength,
+                   long totalFrames, int frameBegin, const ParameterIndex& paramIndex)
 {
-    if (!buf || !paramIndex || !ctx.memDC) return;
+    if (!buf || !ctx.memDC) return;
 
     char line1[256] = {0};
     char line2[256] = {0};
@@ -1665,9 +1699,15 @@ void Panel::DispID(const DrawContext& ctx, const WRect& box, const char* buf,
     // Check frame bounds
     if (frameBegin < 0 || frameBegin >= totalFrames) return;
 
-    // Get file position for this frame
-    long pos = paramIndex[frameBegin];
-    if (pos == 0 && frameBegin != 0) return;  // Invalid index
+    const auto entry = std::lower_bound(
+        paramIndex.begin(), paramIndex.end(), static_cast<long>(frameBegin),
+        [](const std::pair<long, long>& item, long frame) { return item.first < frame; });
+    if (entry == paramIndex.end() || entry->first != frameBegin) return;  // Frame missing from this file
+
+    // Get file position for this frame; the buffer holds bufLength bytes plus a
+    // terminating NUL that bounds the line scans below.
+    long pos = entry->second;
+    if (pos < 0 || pos >= bufLength) return;
 
     // Find the start of frame line
     const char* p = buf + pos;
@@ -1992,12 +2032,14 @@ void Panel::DispSpectrumLine(const DrawContext& ctx, int fileIndex)
     long datHp = static_cast<long>(m_frameBegin) * static_cast<long>(m_frameLength);
     long datTp = datHp + static_cast<long>(frames) * static_cast<long>(m_frameLength);
 
-    // Validate data availability
+    // Validate data availability; positions and the buffer extent are samples
     if (!m_buf[fileIndex] || !m_bufActive[fileIndex]) return;
     if (datHp < m_fileBufHead[fileIndex]) return;
     if (datTp > m_fileBufHead[fileIndex] + m_fileBufLen[fileIndex]) return;
 
-    short* intData = reinterpret_cast<short*>(m_buf[fileIndex]);
+    // Skip the wav header so that it is not analysed as samples
+    const short* intData =
+        reinterpret_cast<const short*>(m_buf[fileIndex] + m_fileHeaderLength[fileIndex]);
     long dataLen = datTp - datHp;
     // Clamp to the FFT size so an oversized span cannot overrun m_ar/m_ai.
     if (dataLen > FFT_LENGTH) dataLen = FFT_LENGTH;

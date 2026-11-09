@@ -7,6 +7,7 @@
  *  PURPOSE:   Audio playback using Windows multimedia API
  *
  *  Update:    2026.1 Created for winsap
+ *             2026.11 Close during playback reposts WM_QUIT once instead of looping
  *
  ************************************************************************/
 
@@ -195,6 +196,8 @@ bool AudioPlayer::PlayFile(HWND hwnd, FILE* fp, long offset, int numBlocks, int 
     bool queued[MAX_BUFFERS] = {};
     bool prepared[MAX_BUFFERS] = {};
     DWORD lastProgressTick = 0;
+    bool quitReceived = false;
+    int quitExitCode = 0;
 
     auto showWaveError = [hwnd](MMRESULT rc) {
         wchar_t errorMsg[256];
@@ -321,10 +324,13 @@ bool AudioPlayer::PlayFile(HWND hwnd, FILE* fp, long offset, int numBlocks, int 
                 m_stopRequested = true;
                 continue;
             }
+            // Reposting WM_QUIT here would remove it again on the next pass of
+            // this loop forever, so remember it and repost once after cleanup.
             if (msg.message == WM_QUIT) {
-                PostQuitMessage(static_cast<int>(msg.wParam));
+                quitReceived = true;
+                quitExitCode = static_cast<int>(msg.wParam);
                 m_stopRequested = true;
-                continue;
+                break;
             }
             TranslateMessage(&msg);
             DispatchMessage(&msg);
@@ -387,6 +393,9 @@ bool AudioPlayer::PlayFile(HWND hwnd, FILE* fp, long offset, int numBlocks, int 
     }
 
     m_playing = false;
+    if (quitReceived) {
+        PostQuitMessage(quitExitCode);
+    }
     if (completionCallback) {
         completionCallback(completed);
     }

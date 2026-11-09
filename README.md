@@ -163,8 +163,25 @@ by this artwork; it is not a general-purpose SVG converter.
 ## Using WinSap
 
 - Open Up/Down supports binary-short audio, parameter text, and FFT-amplitude
-  data. Waveforms use connected display. Mono 16-bit PCM WAV files use their
-  embedded sample rate; raw PCM uses the rate configured under Options.
+  data. Waveforms use connected display. Mono WAV files (8/16/24/32-bit
+  integer PCM or 32/64-bit float, including WAVE_FORMAT_EXTENSIBLE) use their
+  embedded sample rate and are converted to 16-bit samples on load (the x64
+  build converts in memory; the x86 build writes a temporary 16-bit WAV that is
+  deleted when the file is closed). Raw PCM uses the rate configured under
+  Options.
+- Stereo WAV files (same sample formats) are supported in the x64 build only;
+  the x86 build rejects them. The left channel opens in an upper-panel slot
+  and the right channel in the same lower-panel slot (labelled [L] and [R]).
+  While a stereo file is open the two panels stay in sync: frame size, frame
+  number, navigation/zoom, limits and marks apply to both. If the lower panel
+  already holds files, winsap asks whether to close them first. Several stereo
+  and mono files can share the upper panel, but mono files cannot be opened in
+  the lower panel while a stereo file is open. Closing either channel closes
+  both. Waveform and FFT mode never mix with stereo: a stereo file opened in
+  FFT Amplitude mode must be the only open file (winsap offers to close the
+  rest), and while a stereo file is open in Binary mode no file may be opened
+  in FFT Amplitude mode. Clicking a stereo file's name, Play All, and Play
+  Up/Down play it in stereo; the file-name context menu can play one channel.
 - Right-click twice in a waveform to mark a range; right-click again to clear
   it. Save As exports slot 0 from the upper marked panel, or the lower panel
   when the upper panel is not marked.
@@ -172,14 +189,30 @@ by this artwork; it is not a general-purpose SVG converter.
   the longest open track in each panel. Lock Starting Frame makes the lower
   start follow the resulting clamped upper start; Sync Panels also copies frame
   length and visible-frame count.
-- Play Up/Down plays the marked range from slot 0. Play All queues every open
-  binary-short slot in upper-then-lower order. Stop or right-click cancels the
-  active item and clears the queue.
+- Play Up/Down plays the marked area of the first file in that panel that has
+  data there (a stereo file in stereo). Play All queues every open
+  binary-short or FFT-amplitude slot in upper-then-lower order. Stop or
+  right-click cancels the active item and clears the queue.
+- Right-clicking a file name opens a menu: Close file and Play marked area
+  (this file only). For a stereo file it also offers Play this channel (the
+  whole left or right channel) and Play marked area in this channel; its Play
+  marked area plays both channels. FFT-amplitude
+  files play with the cursor running over the spectrogram (it is hidden in
+  the single-frame spectrum-line view), and a mark on a spectrogram is drawn
+  as white lines at its edges.
 - Spectrogram Contrast changes and Colour Map selections become the next-launch
   defaults immediately. Close Files selects individual slots, Close All clears
   both panels, and Reload All refreshes open files.
 
-Command-line release builds from a Visual Studio Developer PowerShell:
+Command-line builds use `build.ps1`, which locates Visual Studio itself:
+
+```powershell
+.\build.ps1                       # Release x64 and x86
+.\build.ps1 -Platform x64         # Release x64 only
+.\build.ps1 -Configuration Debug  # Debug x64 and x86
+```
+
+From a Visual Studio Developer PowerShell, MSBuild can also be run directly:
 
 ```powershell
 msbuild src\winsap.sln /m /p:Configuration=Release /p:Platform=x86

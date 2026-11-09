@@ -7,6 +7,7 @@
  *  PURPOSE: Main application class that manages panels and UI
  *
  *  Update:   2025.4
+ *            2026.11 Backbuffer grows with the client
  *
  ************************************************************************/
 
@@ -156,12 +157,34 @@ private:
     void CycleSpectrogramPalette(HWND hwnd);
     bool PlayWholeFile(HWND hwnd, Panel& panel, int fileIndex);
     bool PlayFileRange(HWND hwnd, Panel& panel, int fileIndex,
-                       size_t startSample, size_t sampleCount, DWORD samplingRate);
+                       size_t startSample, size_t sampleCount, DWORD samplingRate,
+                       bool stereo = false);
+    DWORD FilePlayRate(Panel& panel, int fileIndex) const;
+    bool MarkedAreaHasData(Panel& panel, int fileIndex);
+    bool PlayMarkedArea(HWND hwnd, Panel& panel, int fileIndex, bool stereo);
+    void PlayPanelMark(HWND hwnd, Panel& panel);
+    void ShowFileMenu(HWND hwnd, Panel& panel, int fileIndex, int xPos, int yPos);
+    void CloseFileAt(HWND hwnd, Panel& panel, int fileIndex);
     void StartNextPlayback(HWND hwnd);
     void FinishPlayback(HWND hwnd, Panel& panel, bool completed);
     void StopPlayback(HWND hwnd, const wchar_t* status);
     void ShowHelpTopics(HWND hwnd);
     void SyncLockedLowerStart();
+    void MovePanels(HWND hwnd, int direction, bool bySkip);
+
+    // Stereo wav files: the left channel sits in an upper slot and the right
+    // channel in the lower slot with the same index. While one is open the two
+    // panels share their view and mark.
+    bool StereoActive() const { return m_upperPanel.HasStereoFile(); }
+    // Waveform and FFT mode never mix while a stereo file is open: a stereo
+    // file in FFT mode stands alone, one in waveform mode excludes FFT files.
+    bool StereoFftActive() const;
+    bool AllowMonoOpenWithStereo(HWND hwnd, int fileMode);
+    bool OpenStereoFile(HWND hwnd, const WCHAR* fileName, int upperIndex, int fileMode,
+                        long headerLength, DWORD dataLength, DWORD samplingRate,
+                        int sampleFormat);
+    void SyncStereoMark(bool fromUpper);
+    void SyncStereoState(HWND hwnd, bool fromLower);
 
     // DPI handling
     void InitializeDpi(HWND hwnd);
@@ -170,6 +193,7 @@ private:
 
     // Drawing initialization
     void InitializeGDI(HWND hwnd);
+    void EnsureBackBuffer(HWND hwnd);
     void InitializePens();
     void InitializeBrushes();
 
@@ -219,6 +243,8 @@ private:
     // GDI objects
     HDC m_memdc;
     HBITMAP m_hbit;
+    int m_hbitWidth = 0;   // pixels
+    int m_hbitHeight = 0;  // pixels
     HBITMAP m_hOldBitmap;
     HBRUSH m_hbrush;
     HPEN m_hOldpen;

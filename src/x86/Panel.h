@@ -7,6 +7,8 @@
  *  PURPOSE: Encapsulates all panel (upper/lower) related data and operations
  *
  *  Update:   2025.4
+ *            2026.11 Per slot parameter frame index
+ *            2026.11 Sparse parameter frame index, no 40000 frame limit
  *
  ************************************************************************/
 
@@ -15,11 +17,13 @@
 #include <windows.h>
 #include <stdio.h>
 #include <vector>
+#include <utility>
 #include <optional>
 #include <string>
 #include <array>
 #include <cstdint>
 #include "SpectrogramPalette.h"
+#include "FileDialogs.h"
 
 // Forward declarations
 class WinsapApp;
@@ -27,6 +31,14 @@ struct DrawContext;
 
 #define PANELMAXFILE        6
 #define MAXFILENAME         255
+// FRAME= numbers at or above this are ignored. The index only holds the frames
+// present, so this is no memory bound; it keeps int frame arithmetic (begin +
+// count, zoom doubling) clear of overflow.
+#define PARAMETER_MAX_FRAMES 1000000000L
+
+// (frame number, byte offset of its FRAME= line), sorted by frame, one entry
+// per frame present in the file.
+typedef std::vector<std::pair<long, long>> ParameterIndex;
 #define PRELEN              500000
 
 // FFT constants
@@ -76,13 +88,19 @@ public:
     // File Management
     bool OpenFile(int index, const WCHAR* fileName, int fileType,
                   long dataOffset = 0, long dataLength = 0,
-                  BOOL isWav = FALSE, DWORD samplingRate = 0);
+                  BOOL isWav = FALSE, DWORD samplingRate = 0,
+                  int sampleFormat = wavPcm16, const WCHAR* dataFileName = nullptr);
     void CloseFile(int index);
     void CloseAllFiles();
     bool IsFileOpen(int index) const { return m_flag[index] != 0; }
 
     // Getters
     const WCHAR* GetFileName(int index) const { return m_fileName[index]; }
+    // The file the 16-bit samples are read from: a converted temp wav or the file itself
+    const WCHAR* GetDataFileName(int index) const
+    {
+        return m_tempDataFile[index][0] != L'\0' ? m_tempDataFile[index] : m_fileName[index];
+    }
     FILE* GetFilePointer(int index) const { return m_fp[index]; }
     int GetFileType(int index) const { return m_fileType[index]; }
     long GetFileLength(int index) const { return m_fileLength[index]; }
@@ -162,6 +180,7 @@ public:
     float* GetFileLowLimits() { return m_fileLowLimit; }
     long* GetFileFrameTotals() { return m_fileFrameTotal; }
     BOOL* GetIsWavFlags() { return m_isWav; }
+    int GetSampleFormat(int index) const { return m_sampleFormat[index]; }
     DWORD* GetSamplingRates() { return m_samplingRate; }
     long* GetFileHeaderLengths() { return m_fileHeaderLength; }
     char** GetBuffers() { return m_buf; }
@@ -184,7 +203,7 @@ public:
     // Parameter file support
     bool IsParActive() const { return m_parActive; }
     void SetParActive(bool active) { m_parActive = active; }
-    long* GetParameterIndex() { return m_parameterIndex; }
+    const ParameterIndex& GetParameterIndex(int index) const { return m_parameterIndex[index]; }
 
     // UI interaction
     int GetFileIndexAtPosition(int xPos, int yPos, const DrawContext& ctx) const;
@@ -222,8 +241,8 @@ private:
     long ParFileTotal(FILE* fp);
     void BuildParameterIndex(int index);
     void DispParameter(const DrawContext& ctx, int fileIndex);
-    void DispID(const DrawContext& ctx, const WRect& box, const char* buf,
-                long totalFrames, int frameBegin, const long* paramIndex);
+    void DispID(const DrawContext& ctx, const WRect& box, const char* buf, long bufLength,
+                long totalFrames, int frameBegin, const ParameterIndex& paramIndex);
 
     // FFT helper methods
     void FFT(float* z, float* y, int n);
@@ -257,6 +276,9 @@ private:
     long m_fileLength[PANELMAXFILE];
     long m_audioDataLength[PANELMAXFILE];
     BOOL m_isWav[PANELMAXFILE];
+    int m_sampleFormat[PANELMAXFILE];   // WavSampleFormat of the wav data on disk
+    // Converted 16-bit copy of a non-16-bit wav; deleted when the file closes
+    WCHAR m_tempDataFile[PANELMAXFILE][MAX_PATH];
     long m_fileHeaderLength[PANELMAXFILE];
     DWORD m_samplingRate[PANELMAXFILE];
     long m_fileBufHead[PANELMAXFILE];
@@ -304,7 +326,9 @@ private:
     long m_lastFrameNum;
 
     // Parameter file support
-    long m_parameterIndex[40000];
+    // Byte offset of each FRAME= line, per slot so that one file's offsets are
+    // never applied to another file's buffer. -1 marks a frame the file lacks.
+    ParameterIndex m_parameterIndex[PANELMAXFILE];
 
     // FFT buffers
     float m_ar[FFT_LENGTH];         // Real part of FFT result

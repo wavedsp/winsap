@@ -330,12 +330,27 @@ void SpectrogramCache::BuildAsync(const std::int16_t* samples,
     }
 
     m_building.store(true, std::memory_order_release);
-    m_worker = std::thread([this, sampleCount, sampleRate, windowMs, hopMs, memoryBudget] {
-        const bool ok = BuildInternal(m_ownedSamples.data(), sampleCount, sampleRate, 0,
-                                      windowMs, hopMs, memoryBudget);
-        m_ready.store(ok, std::memory_order_release);
+    // Thread creation fails with system_error or bad_alloc under resource
+    // pressure. Leave the cache idle and not ready rather than terminating;
+    // the spectrogram then simply stays blank.
+    try {
+        m_worker = std::thread([this, sampleCount, sampleRate, windowMs, hopMs, memoryBudget] {
+            bool ok = false;
+            try {
+                ok = BuildInternal(m_ownedSamples.data(), sampleCount, sampleRate, 0,
+                                   windowMs, hopMs, memoryBudget);
+            } catch (...) {
+                // An exception leaving a thread entry point terminates the process
+                ok = false;
+            }
+            m_ready.store(ok, std::memory_order_release);
+            m_building.store(false, std::memory_order_release);
+        });
+    } catch (const std::exception&) {
         m_building.store(false, std::memory_order_release);
-    });
+        m_ownedSamples.clear();
+        m_ownedSamples.shrink_to_fit();
+    }
 }
 
 void SpectrogramCache::BuildAsync(std::shared_ptr<const std::vector<std::int16_t>> samples,
@@ -355,12 +370,23 @@ void SpectrogramCache::BuildAsync(std::shared_ptr<const std::vector<std::int16_t
     const std::size_t sampleCount = m_sharedSamples->size();
 
     m_building.store(true, std::memory_order_release);
-    m_worker = std::thread([this, data, sampleCount, sampleRate, windowMs, hopMs, memoryBudget] {
-        const bool ok = BuildInternal(data, sampleCount, sampleRate, 0,
-                                      windowMs, hopMs, memoryBudget);
-        m_ready.store(ok, std::memory_order_release);
+    // See the copying overload: a failed start leaves the cache idle.
+    try {
+        m_worker = std::thread([this, data, sampleCount, sampleRate, windowMs, hopMs, memoryBudget] {
+            bool ok = false;
+            try {
+                ok = BuildInternal(data, sampleCount, sampleRate, 0,
+                                   windowMs, hopMs, memoryBudget);
+            } catch (...) {
+                ok = false;
+            }
+            m_ready.store(ok, std::memory_order_release);
+            m_building.store(false, std::memory_order_release);
+        });
+    } catch (const std::exception&) {
         m_building.store(false, std::memory_order_release);
-    });
+        m_sharedSamples.reset();
+    }
 }
 
 /*****************************************************************************
@@ -419,57 +445,74 @@ bool SpectrogramCache::BuildInternal(const std::int16_t* samples,
     }
 
     const auto run = [&]() {
-        Worker worker;
-        worker.Init(m_geometry);
+        try {
+            Worker worker;
+            worker.Init(m_geometry);
 
-        std::size_t chunk = 0;
-        while (ClaimNextChunk(chunk)) {
-            if (m_cancel.load(std::memory_order_acquire)) {
-                return;
-            }
-
-            const std::size_t begin = chunk * kSpectrogramChunkColumns;
-            const std::size_t end = std::min(begin + kSpectrogramChunkColumns, m_columns);
-            float peak = 0.0f;
-
-            for (std::size_t column = begin; column < end; column++) {
-                const std::size_t start = column * hop;
-                if (start >= sampleCount) {
-                    break;
+            std::size_t chunk = 0;
+            while (ClaimNextChunk(chunk)) {
+                if (m_cancel.load(std::memory_order_acquire)) {
+                    return;
                 }
-                const std::size_t available =
-                    std::min(static_cast<std::size_t>(m_geometry.windowLength),
-                             sampleCount - start);
-                peak = std::max(peak, worker.Column(m_geometry, samples + start,
-                                                    static_cast<int>(available),
-                                                    m_matrix.data() + column * bins));
+
+                const std::size_t begin = chunk * kSpectrogramChunkColumns;
+                const std::size_t end = std::min(begin + kSpectrogramChunkColumns, m_columns);
+                float peak = 0.0f;
+
+                for (std::size_t column = begin; column < end; column++) {
+                    const std::size_t start = column * hop;
+                    if (start >= sampleCount) {
+                        break;
+                    }
+                    const std::size_t available =
+                        std::min(static_cast<std::size_t>(m_geometry.windowLength),
+                                 sampleCount - start);
+                    peak = std::max(peak, worker.Column(m_geometry, samples + start,
+                                                        static_cast<int>(available),
+                                                        m_matrix.data() + column * bins));
+                }
+
+                RecordPeak(static_cast<int>(peak * kDbQuantScale + 0.5f));
+
+                // Release: a reader that sees state 2 also sees the columns.
+                m_chunkState[chunk].store(2u, std::memory_order_release);
+                m_generation.fetch_add(1u, std::memory_order_release);
+                const std::size_t done = m_chunksDone.fetch_add(1u, std::memory_order_relaxed) + 1u;
+                m_progress.store(static_cast<int>(done * 100u / m_chunkCount),
+                                 std::memory_order_relaxed);
             }
-
-            RecordPeak(static_cast<int>(peak * kDbQuantScale + 0.5f));
-
-            // Release: a reader that sees state 2 also sees the columns.
-            m_chunkState[chunk].store(2u, std::memory_order_release);
-            m_generation.fetch_add(1u, std::memory_order_release);
-            const std::size_t done = m_chunksDone.fetch_add(1u, std::memory_order_relaxed) + 1u;
-            m_progress.store(static_cast<int>(done * 100u / m_chunkCount),
-                             std::memory_order_relaxed);
+        } catch (const std::bad_alloc&) {
+            // A worker without scratch space just stops. Any chunk it had
+            // claimed stays unfinished, which the check below reports.
         }
     };
 
     if (threads == 1) {
         run();
     } else {
+        // Every started thread is joined even if a later one fails to start,
+        // since destroying a joinable std::thread terminates the process.
+        // Whatever did start claims every chunk between them, and if none
+        // started this thread does the work itself.
         std::vector<std::thread> pool;
-        pool.reserve(threads);
-        for (unsigned id = 0; id < threads; id++) {
-            pool.emplace_back(run);
+        try {
+            pool.reserve(threads);
+            for (unsigned id = 0; id < threads; id++) {
+                pool.emplace_back(run);
+            }
+        } catch (const std::exception&) {
+            // Run with the threads that did start
+        }
+        if (pool.empty()) {
+            run();
         }
         for (auto& thread : pool) {
             thread.join();
         }
     }
 
-    if (m_cancel.load(std::memory_order_acquire)) {
+    if (m_cancel.load(std::memory_order_acquire) ||
+        m_chunksDone.load(std::memory_order_acquire) < m_chunkCount) {
         return false;
     }
 

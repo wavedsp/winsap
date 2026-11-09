@@ -8,12 +8,14 @@
  *           file mode selection in addition to standard file selection.
  *
  *  Update:   2025.4
+ *            2026.11 Parameter mode and the *.par filter select each other
  *
  ************************************************************************/
 
 #include "FileOpenDialog.h"
 #include "Resource.h"
 #include "FileDialogs.h"
+#include <dlgs.h>
 #include <string>
 
 namespace {
@@ -124,6 +126,9 @@ bool FileOpenDialog::Show(HINSTANCE hInstance, HWND hwndOwner, const WCHAR* titl
     if (result) {
         // Copy the selected file path to the data structure
         wcsncpy_s(data.szPath, MAX_PATH, szFile, _TRUNCATE);
+        if (IsParameterFileName(data.szPath)) {
+            data.fileMode = ftParameter;
+        }
         return true;
     }
 
@@ -171,6 +176,15 @@ UINT_PTR CALLBACK FileOpenDialog::DialogHookProc(HWND hdlg, UINT uiMsg, WPARAM w
                 }
             }
             return TRUE;
+        }
+
+        case WM_COMMAND:
+        {
+            if (LOWORD(wParam) == IDC_FILEMODE && HIWORD(wParam) == CBN_SELCHANGE) {
+                SyncFilterToMode(hdlg);
+                return TRUE;
+            }
+            return FALSE;
         }
 
         case WM_NOTIFY:
@@ -275,6 +289,12 @@ BOOL FileOpenDialog::HandleNotification(HWND hdlg, LPOFNOTIFY pofn)
             // User selected a different file - update path display
             HWND hwndParent = GetParent(hdlg);
             UpdatePathDisplay(hdlg, hwndParent);
+
+            WCHAR szFile[MAX_PATH];
+            GetDlgItemText(hdlg, IDE_PATH, szFile, MAX_PATH);
+            if (IsParameterFileName(szFile)) {
+                SendDlgItemMessage(hdlg, IDC_FILEMODE, CB_SETCURSEL, ftParameter, 0);
+            }
             return TRUE;
         }
 
@@ -329,15 +349,55 @@ void FileOpenDialog::UpdatePathDisplay(HWND hdlg, HWND hwndParent)
  ************************************************************************/
 void FileOpenDialog::AutoSelectMode(HWND hdlg, int filterIndex)
 {
-    // Filter index 4 corresponds to Parameter files (.par)
-    // Auto-select "Parameter" mode for these files
-    if (filterIndex == 4) {
-        SendDlgItemMessage(hdlg, IDC_FILEMODE, CB_SETCURSEL, 1, 0); // Parameter = index 1
+    // Parameter mode and the *.par filter are hard-linked. Leaving the *.par
+    // filter drops Parameter mode, but a Binary or FFT Amplitude choice is kept.
+    const int modeIndex = (int)SendDlgItemMessage(hdlg, IDC_FILEMODE, CB_GETCURSEL, 0, 0);
+    if (filterIndex == ParameterFilterIndex()) {
+        SendDlgItemMessage(hdlg, IDC_FILEMODE, CB_SETCURSEL, ftParameter, 0);
     }
-    else {
-        // For all other filters, default to Binary mode
-        SendDlgItemMessage(hdlg, IDC_FILEMODE, CB_SETCURSEL, 0, 0); // Binary = index 0
+    else if (modeIndex == ftParameter) {
+        SendDlgItemMessage(hdlg, IDC_FILEMODE, CB_SETCURSEL, ftBinaryShort, 0);
     }
+}
+
+/************************************************************************
+ * SyncFilterToMode (static)
+ *
+ * Keeps the file type filter in step with a mode the user just picked:
+ * Parameter shows only *.par, and leaving Parameter while *.par is shown
+ * returns to the first filter.
+ *
+ * Parameters:
+ *   hdlg - Handle to the child dialog
+ ************************************************************************/
+void FileOpenDialog::SyncFilterToMode(HWND hdlg)
+{
+    HWND hwndParent = GetParent(hdlg);
+    HWND hwndFilter = GetDlgItem(hwndParent, cmb1);
+    const int parameterFilter = ParameterFilterIndex();
+    if (hwndFilter == nullptr || parameterFilter == 0) {
+        return;
+    }
+
+    const int modeIndex = (int)SendDlgItemMessage(hdlg, IDC_FILEMODE, CB_GETCURSEL, 0, 0);
+    const int currentFilter = (int)SendMessage(hwndFilter, CB_GETCURSEL, 0, 0) + 1;
+    int targetFilter = currentFilter;
+    if (modeIndex == ftParameter) {
+        targetFilter = parameterFilter;
+    }
+    else if (currentFilter == parameterFilter) {
+        targetFilter = 1;
+    }
+    if (targetFilter == currentFilter) {
+        return;
+    }
+
+    // CB_SETCURSEL does not notify, so the common dialog is told about the
+    // change as if the user had picked it. It reapplies the filter on
+    // CBN_SELENDOK, not CBN_SELCHANGE, and then raises CDN_TYPECHANGE, which
+    // leaves the chosen mode in place.
+    SendMessage(hwndFilter, CB_SETCURSEL, targetFilter - 1, 0);
+    SendMessage(hwndParent, WM_COMMAND, MAKEWPARAM(cmb1, CBN_SELENDOK), (LPARAM)hwndFilter);
 }
 
 /************************************************************************

@@ -7,6 +7,7 @@
  *  PURPOSE:   Audio playback using Windows multimedia API
  *
  *  Update:    2026.1 Created for winsap
+ *             2026.11 Close during playback reposts WM_QUIT once instead of looping
  *
  ************************************************************************/
 
@@ -77,7 +78,7 @@ void AudioPlayer::CleanupBuffers()
     m_initialized = false;
 }
 
-bool AudioPlayer::OpenOutputDevice(HWND hwnd, DWORD rate)
+bool AudioPlayer::OpenOutputDevice(HWND hwnd, DWORD rate, WORD channels)
 {
     WAVEOUTCAPS woc;
     WAVEFORMATEX wfx;
@@ -92,7 +93,7 @@ bool AudioPlayer::OpenOutputDevice(HWND hwnd, DWORD rate)
         rc = waveOutGetDevCaps(nDevId, &woc, sizeof(woc));
 
         if (rc == MMSYSERR_NOERROR) {
-            wfx.nChannels = 1;              // mono
+            wfx.nChannels = channels;
             wfx.nSamplesPerSec = rate;      // sampling rate
             wfx.wFormatTag = WAVE_FORMAT_PCM;
             wfx.wBitsPerSample = 16;
@@ -134,7 +135,8 @@ void AudioPlayer::CloseOutputDevice()
 bool AudioPlayer::PlaySamples(HWND hwnd, const int16_t* samples, size_t sampleCount,
                               const wchar_t* fileName, DWORD samplingRate,
                               const PlaybackProgressCallback& progressCallback,
-                              const PlaybackCompletionCallback& completionCallback)
+                              const PlaybackCompletionCallback& completionCallback,
+                              const int16_t* rightSamples)
 {
     if (m_playing) {
         return false;
@@ -161,7 +163,8 @@ bool AudioPlayer::PlaySamples(HWND hwnd, const int16_t* samples, size_t sampleCo
     }
 
     // Open output device
-    if (!OpenOutputDevice(hwnd, samplingRate)) {
+    const WORD channels = rightSamples != nullptr ? 2 : 1;
+    if (!OpenOutputDevice(hwnd, samplingRate, channels)) {
         MessageBox(hwnd, L"Failed to open the wave output device!",
                    L"Error", MB_OK | MB_ICONERROR);
         return false;
@@ -183,6 +186,8 @@ bool AudioPlayer::PlaySamples(HWND hwnd, const int16_t* samples, size_t sampleCo
     bool queued[MAX_BUFFERS] = {};
     bool prepared[MAX_BUFFERS] = {};
     DWORD lastProgressTick = 0;
+    bool quitReceived = false;
+    int quitExitCode = 0;
 
     auto showWaveError = [hwnd](MMRESULT rc) {
         wchar_t errorMsg[256];
@@ -195,12 +200,21 @@ bool AudioPlayer::PlaySamples(HWND hwnd, const int16_t* samples, size_t sampleCo
             return true;
         }
 
+        // sampleCount and the queue position count frames, one sample per channel
         const size_t samplesToQueue =
-            min(static_cast<size_t>(LISTEN_BUFFER_LEN), totalSamples - nextSample);
-        memcpy(m_wh[index]->lpData, samples + nextSample,
-               samplesToQueue * sizeof(int16_t));
+            min(static_cast<size_t>(LISTEN_BUFFER_LEN / channels), totalSamples - nextSample);
+        int16_t* out = reinterpret_cast<int16_t*>(m_wh[index]->lpData);
+        if (rightSamples != nullptr) {
+            for (size_t n = 0; n < samplesToQueue; n++) {
+                out[2 * n] = samples[nextSample + n];
+                out[2 * n + 1] = rightSamples[nextSample + n];
+            }
+        }
+        else {
+            memcpy(out, samples + nextSample, samplesToQueue * sizeof(int16_t));
+        }
         m_wh[index]->dwBufferLength =
-            static_cast<DWORD>(samplesToQueue * sizeof(int16_t));
+            static_cast<DWORD>(samplesToQueue * channels * sizeof(int16_t));
         m_wh[index]->dwFlags = 0;
         m_wh[index]->dwLoops = 0;
         nextSample += samplesToQueue;
@@ -293,10 +307,13 @@ bool AudioPlayer::PlaySamples(HWND hwnd, const int16_t* samples, size_t sampleCo
                 m_stopRequested = true;
                 continue;
             }
+            // Reposting WM_QUIT here would remove it again on the next pass of
+            // this loop forever, so remember it and repost once after cleanup.
             if (msg.message == WM_QUIT) {
-                PostQuitMessage(static_cast<int>(msg.wParam));
+                quitReceived = true;
+                quitExitCode = static_cast<int>(msg.wParam);
                 m_stopRequested = true;
-                continue;
+                break;
             }
             TranslateMessage(&msg);
             DispatchMessage(&msg);
@@ -317,7 +334,8 @@ bool AudioPlayer::PlaySamples(HWND hwnd, const int16_t* samples, size_t sampleCo
                     if (position.wType == TIME_SAMPLES) {
                         playedSamples = static_cast<size_t>(position.u.sample);
                     } else if (position.wType == TIME_BYTES) {
-                        playedSamples = static_cast<size_t>(position.u.cb / sizeof(int16_t));
+                        playedSamples = static_cast<size_t>(
+                            position.u.cb / (channels * sizeof(int16_t)));
                     } else if (position.wType == TIME_MS) {
                         playedSamples = static_cast<size_t>(
                             static_cast<uint64_t>(position.u.ms) * samplingRate / 1000);
@@ -359,6 +377,9 @@ bool AudioPlayer::PlaySamples(HWND hwnd, const int16_t* samples, size_t sampleCo
     }
 
     m_playing = false;
+    if (quitReceived) {
+        PostQuitMessage(quitExitCode);
+    }
     if (completionCallback) {
         completionCallback(completed);
     }

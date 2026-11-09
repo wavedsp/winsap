@@ -8,6 +8,7 @@
  *
  *  Update:   2025.4 Update the code base
  *            2026.1 Porting to C++
+ *            2026.11 Bounded command line parsing, .par always opens as Parameter, growing backbuffer, raw rate reaches FFT tracks
  *
  ************************************************************************/
 
@@ -538,6 +539,8 @@ void WinsapApp::OnDestroy()
 // ===================== On Size =======================
 void WinsapApp::OnSize(HWND hwnd, WPARAM wParam, LPARAM lParam)
 {
+    EnsureBackBuffer(hwnd);
+
     // Resize toolbar
     m_toolbarManager.MoveToolbar(hwnd);
 
@@ -748,7 +751,9 @@ void WinsapApp::ApplyRawSamplingRate(DWORD rate)
     for (Panel* panel : panels) {
         for (int i = 0; i < PANELMAXFILE; i++) {
             if (!panel->IsFileOpen(i)) continue;
-            if (panel->GetFileTypes()[i] != ftBinaryShort) continue;
+            // Raw audio shown as an FFT amplitude plays at the raw rate too, so its
+            // frequency axis has to follow the same setting.
+            if (panel->GetFileTypes()[i] == ftParameter) continue;
             if (panel->GetIsWavFlags()[i]) continue;   // A wav keeps its own rate
             panel->GetSamplingRates()[i] = rate;
         }
@@ -923,8 +928,10 @@ void WinsapApp::OnMouseMove(HWND hwnd, WPARAM wParam, LPARAM lParam)
             if (isWav) {
                 // WAV file - the rate comes from the file header
                 swprintf_s(fileInfo, 512,
-                           L"%s  |  WAV: %lu Hz, Mono, 16-bit PCM, %ld samples (%.3f sec)",
-                           fullPath, samplingRate, samples, seconds);
+                           L"%s  |  WAV: %lu Hz, Mono, %s, %ld samples (%.3f sec)",
+                           fullPath, samplingRate,
+                           WavSampleFormatName(filePanel->GetSampleFormat(fileIndex)),
+                           samples, seconds);
             }
             else {
                 // Raw PCM - the rate is the one set from the Options menu
@@ -978,8 +985,9 @@ void WinsapApp::OnMouseMove(HWND hwnd, WPARAM wParam, LPARAM lParam)
         float datTp = static_cast<float>(frameBegin + frameNum) * static_cast<float>(frameLength);
         float horiz = static_cast<float>(waveBox.b.x - waveBox.a.x) / (datTp - datHp);
 
-        // Convert pixel position to actual sample number in file
-        int xCoord = static_cast<int>(static_cast<float>(xPos - waveBox.a.x) / horiz);
+        // Convert pixel position to actual sample number in file; 64 bits because
+        // a long parameter file spans more samples than an int holds
+        const long long xCoord = static_cast<long long>(static_cast<float>(xPos - waveBox.a.x) / horiz);
 
         // Calculate y coordinate (amplitude value)
         float upLimit = panel->GetUpLimit();
@@ -1028,7 +1036,7 @@ void WinsapApp::OnMouseMove(HWND hwnd, WPARAM wParam, LPARAM lParam)
         }
         else {
             // Waveform: sample index against amplitude, as it always was.
-            swprintf_s(statusText, 256, L" (%d, %d)", xCoord, yCoord);
+            swprintf_s(statusText, 256, L" (%lld, %d)", xCoord, yCoord);
         }
 
         if (hwndStatus) {
@@ -1243,13 +1251,38 @@ void WinsapApp::SyncLockedLowerStart()
     }
 }
 
+// Moves every active panel by one frame or by its frame skip. With the
+// starting-frame lock on, the lower panel follows the upper one instead.
+void WinsapApp::MovePanels(HWND hwnd, int direction, bool bySkip)
+{
+    const bool upperActive = m_upperPanel.IsActive();
+    const bool lowerActive = m_lowerPanel.IsActive();
+    if (upperActive) {
+        const int step = bySkip ? m_upperPanel.GetFrameSkip() : 1;
+        m_upperPanel.SetFrameBegin(m_upperPanel.GetFrameBegin() + direction * step);
+    }
+    if (lowerActive) {
+        if (m_lockStartFrame && upperActive) {
+            SyncLockedLowerStart();
+        }
+        else {
+            const int step = bySkip ? m_lowerPanel.GetFrameSkip() : 1;
+            m_lowerPanel.SetFrameBegin(m_lowerPanel.GetFrameBegin() + direction * step);
+        }
+    }
+    if (upperActive || lowerActive) {
+        m_updateType = upAll;
+        InvalidateRect(hwnd, nullptr, FALSE);
+    }
+}
+
 void WinsapApp::ShowHelpTopics(HWND hwnd)
 {
     MessageBox(
         hwnd,
         L"Opening and display\n"
         L"Use Open Up or Open Down, choose binary-short, parameter, or FFT-amplitude "
-        L"mode. Waveforms use connected display. WAV input must be mono 16-bit PCM.\n\n"
+        L"mode. Waveforms use connected display. WAV input must be mono 8, 16, 24 or 32-bit PCM or 32/64-bit float.\n\n"
         L"Marks and Save As\n"
         L"Right-click a waveform twice to mark a range; a third click clears it. "
         L"Save As exports slot 0 from the upper marked panel, otherwise the lower, as WAV.\n\n"
@@ -1342,41 +1375,19 @@ LRESULT WinsapApp::OnCommand(HWND hwnd, WPARAM wParam, LPARAM lParam)
         break;
 
     case ID_TOOLS_MOVEFRAMEBACKWARD:  // Move backward 1 frame
-        if (m_upperPanel.IsActive()) {
-            m_upperPanel.SetFrameBegin(m_upperPanel.GetFrameBegin() - 1);
-            SyncLockedLowerStart();
-            m_updateType = upAll;
-            InvalidateRect(hwnd, nullptr, FALSE);
-        }
+        MovePanels(hwnd, -1, false);
         break;
 
     case ID_TOOLS_MOVEFRAMEFORWARD:  // Move forward 1 frame
-        if (m_upperPanel.IsActive()) {
-            m_upperPanel.SetFrameBegin(m_upperPanel.GetFrameBegin() + 1);
-            SyncLockedLowerStart();
-            m_updateType = upAll;
-            InvalidateRect(hwnd, nullptr, FALSE);
-        }
+        MovePanels(hwnd, 1, false);
         break;
 
     case ID_TOOLS_FASTBACKWARD:  // Fast backward (10 frames)
-        if (m_upperPanel.IsActive()) {
-            m_upperPanel.SetFrameBegin(
-                m_upperPanel.GetFrameBegin() - m_upperPanel.GetFrameSkip());
-            SyncLockedLowerStart();
-            m_updateType = upAll;
-            InvalidateRect(hwnd, nullptr, FALSE);
-        }
+        MovePanels(hwnd, -1, true);
         break;
 
     case ID_TOOLS_FASTFORWARD:  // Fast forward (frameSkip frames)
-        if (m_upperPanel.IsActive()) {
-            m_upperPanel.SetFrameBegin(
-                m_upperPanel.GetFrameBegin() + m_upperPanel.GetFrameSkip());
-            SyncLockedLowerStart();
-            m_updateType = upAll;
-            InvalidateRect(hwnd, nullptr, FALSE);
-        }
+        MovePanels(hwnd, 1, true);
         break;
 
     case ID_TOOLS_ZOOMIN:  // Zoom in (halve visible frames)
@@ -2083,6 +2094,10 @@ void WinsapApp::InitializeGDI(HWND hwnd)
     m_memdc = CreateCompatibleDC(hdc);
     m_hbit = CreateCompatibleBitmap(hdc, maxX, maxY);
     m_hOldBitmap = (HBITMAP)SelectObject(m_memdc, m_hbit);
+    if (m_hbit) {
+        m_hbitWidth = maxX;
+        m_hbitHeight = maxY;
+    }
 
     // Get black brush and select it
     m_hbrush = (HBRUSH)GetStockObject(BLACK_BRUSH);
@@ -2221,12 +2236,52 @@ void WinsapApp::OnDpiChanged(HWND hwnd, WPARAM wParam, LPARAM lParam)
     m_toolbarManager.RecreateToolbar(hwnd);
     m_toolbarManager.ApplyMenuIcons(m_hMenu);
 
+    // The new monitor may be larger than any the backbuffer has covered
+    EnsureBackBuffer(hwnd);
+
     // Resize desktop
     ResizeDesktop(hwnd);
 
     // Redraw
     m_updateType = upAll;
     InvalidateRect(hwnd, nullptr, TRUE);
+}
+
+// ===================== Ensure Back Buffer =======================
+// The backbuffer starts at primary screen size, but a client on a larger
+// secondary monitor, or after a resolution change, can outgrow it. It only
+// ever grows, so ordinary resizing does not reallocate. If the larger bitmap
+// cannot be created the old one stays selected and drawing is clipped rather
+// than lost.
+void WinsapApp::EnsureBackBuffer(HWND hwnd)
+{
+    if (!m_memdc) return;
+
+    RECT rc;
+    if (!GetClientRect(hwnd, &rc)) return;
+
+    int width = rc.right - rc.left;
+    int height = rc.bottom - rc.top;
+    if (width < m_hbitWidth) width = m_hbitWidth;
+    if (height < m_hbitHeight) height = m_hbitHeight;
+    if (width <= 0 || height <= 0) return;
+    if (m_hbit && width == m_hbitWidth && height == m_hbitHeight) return;
+
+    HDC hdc = GetDC(hwnd);
+    HBITMAP hbit = CreateCompatibleBitmap(hdc, width, height);
+    ReleaseDC(hwnd, hdc);
+    if (!hbit) return;
+
+    SelectObject(m_memdc, hbit);
+    if (m_hbit) {
+        DeleteObject(m_hbit);
+    }
+    m_hbit = hbit;
+    m_hbitWidth = width;
+    m_hbitHeight = height;
+
+    RECT fill = { 0, 0, width, height };
+    FillRect(m_memdc, &fill, (HBRUSH)GetStockObject(BLACK_BRUSH));
 }
 
 // ===================== Initialize Pens =======================
@@ -2609,7 +2664,7 @@ bool WinsapApp::SaveAsFile(HWND hwnd)
     std::vector<int16_t> samples(sampleCount);
 
     FILE* fp = nullptr;
-    if (_wfopen_s(&fp, pPanel->GetFileName(0), L"rb") != 0 || fp == nullptr) {
+    if (_wfopen_s(&fp, pPanel->GetDataFileName(0), L"rb") != 0 || fp == nullptr) {
         MessageBox(hwnd, L"Cannot reopen the source file!", L"ERROR",
                    MB_OK | MB_ICONERROR);
         return false;
@@ -2656,8 +2711,11 @@ void WinsapApp::SetupFileUp(HWND hwnd, const WCHAR* fileName, int index, int fil
         return;
     }
 
-    // Note: File mode is now provided by the user via the dialog
-    // No longer auto-detecting parameter files here
+    // Parameter mode and the .par extension are tied together, so a .par file
+    // opens as parameters whichever mode the caller chose or remembered.
+    if (IsParameterFileName(fileName)) {
+        fileMode = ftParameter;
+    }
 
     // Test if the file is a WAV file
     BOOL isWav = FALSE;
@@ -2665,6 +2723,7 @@ void WinsapApp::SetupFileUp(HWND hwnd, const WCHAR* fileName, int index, int fil
     DWORD wavDataLength = 0;
     DWORD samplingRate = m_samplingRate;
     unsigned short channels = 1;
+    int sampleFormat = wavPcm16;
 
     fread(&la, 1, 4, fp);
     if (la == 0x46464952) {  // 'RIFF'
@@ -2672,12 +2731,21 @@ void WinsapApp::SetupFileUp(HWND hwnd, const WCHAR* fileName, int index, int fil
         filesize += ftell(fp);
         fread(&la, 1, 4, fp);
         if (la == 0x45564157) {  // 'WAVE'
-            if (ReadWavFile(fp, &headerLength, &wavDataLength, &samplingRate, &channels)) {
+            if (ReadWavFile(fp, &headerLength, &wavDataLength, &samplingRate, &channels,
+                            &sampleFormat)) {
                 // Check for stereo - reject if not mono
                 if (channels > 1) {
                     fclose(fp);
-                    MessageBox(hwnd, L"Stereo WAV files are not supported.\nPlease convert to mono first.",
+                    MessageBox(hwnd, L"Stereo WAV files are supported only in the 64-bit build.\nPlease convert to mono first.",
                               L"Unsupported Format", MB_OK | MB_ICONWARNING);
+                    return;
+                }
+                if (sampleFormat == wavUnsupported) {
+                    fclose(fp);
+                    MessageBox(hwnd, L"This WAV sample format is not supported.\n"
+                                     L"Supported formats are 8, 16, 24 and 32-bit integer PCM "
+                                     L"and 32 or 64-bit float.",
+                               L"Unsupported Format", MB_OK | MB_ICONWARNING);
                     return;
                 }
                 // WAV files are always binary - override parameter mode if selected
@@ -2689,10 +2757,24 @@ void WinsapApp::SetupFileUp(HWND hwnd, const WCHAR* fileName, int index, int fil
     }
     fseek(fp, 0L, SEEK_SET);
 
+    // The panel reads 16-bit samples straight from disk, so other wav encodings
+    // are converted into a temporary 16-bit wav that the panel deletes on close
+    WCHAR tempDataFile[MAX_PATH] = L"";
+    if (isWav && sampleFormat != wavPcm16 &&
+        !ConvertWavToPcm16File(fileName, headerLength, wavDataLength, sampleFormat, samplingRate,
+                               tempDataFile, _countof(tempDataFile),
+                               &headerLength, &wavDataLength)) {
+        fclose(fp);
+        wsprintf(wOut, L"Cannot convert %s to 16-bit samples!", fileName);
+        MessageBox(hwnd, wOut, L"ERROR", MB_OK | MB_ICONERROR);
+        return;
+    }
+
     // Setup the file in the panel
     if (!m_upperPanel.OpenFile(index, fileName, fileMode,
                                headerLength, static_cast<long>(wavDataLength),
-                               isWav, samplingRate)) {
+                               isWav, samplingRate, sampleFormat,
+                               tempDataFile[0] != L'\0' ? tempDataFile : nullptr)) {
         fclose(fp);
         wsprintf(wOut, L"Cannot load file %s!", fileName);
         MessageBox(hwnd, wOut, L"ERROR", MB_OK | MB_ICONERROR);
@@ -2734,8 +2816,11 @@ void WinsapApp::SetupFileDown(HWND hwnd, const WCHAR* fileName, int index, int f
         return;
     }
 
-    // Note: File mode is now provided by the user via the dialog
-    // No longer auto-detecting parameter files here
+    // Parameter mode and the .par extension are tied together, so a .par file
+    // opens as parameters whichever mode the caller chose or remembered.
+    if (IsParameterFileName(fileName)) {
+        fileMode = ftParameter;
+    }
 
     // Test if the file is a WAV file
     BOOL isWav = FALSE;
@@ -2743,6 +2828,7 @@ void WinsapApp::SetupFileDown(HWND hwnd, const WCHAR* fileName, int index, int f
     DWORD wavDataLength = 0;
     DWORD samplingRate = m_samplingRate;
     unsigned short channels = 1;
+    int sampleFormat = wavPcm16;
 
     fread(&la, 1, 4, fp);
     if (la == 0x46464952) {  // 'RIFF'
@@ -2750,12 +2836,21 @@ void WinsapApp::SetupFileDown(HWND hwnd, const WCHAR* fileName, int index, int f
         filesize += ftell(fp);
         fread(&la, 1, 4, fp);
         if (la == 0x45564157) {  // 'WAVE'
-            if (ReadWavFile(fp, &headerLength, &wavDataLength, &samplingRate, &channels)) {
+            if (ReadWavFile(fp, &headerLength, &wavDataLength, &samplingRate, &channels,
+                            &sampleFormat)) {
                 // Check for stereo - reject if not mono
                 if (channels > 1) {
                     fclose(fp);
-                    MessageBox(hwnd, L"Stereo WAV files are not supported.\nPlease convert to mono first.",
+                    MessageBox(hwnd, L"Stereo WAV files are supported only in the 64-bit build.\nPlease convert to mono first.",
                               L"Unsupported Format", MB_OK | MB_ICONWARNING);
+                    return;
+                }
+                if (sampleFormat == wavUnsupported) {
+                    fclose(fp);
+                    MessageBox(hwnd, L"This WAV sample format is not supported.\n"
+                                     L"Supported formats are 8, 16, 24 and 32-bit integer PCM "
+                                     L"and 32 or 64-bit float.",
+                               L"Unsupported Format", MB_OK | MB_ICONWARNING);
                     return;
                 }
                 // WAV files are always binary - override parameter mode if selected
@@ -2767,10 +2862,24 @@ void WinsapApp::SetupFileDown(HWND hwnd, const WCHAR* fileName, int index, int f
     }
     fseek(fp, 0L, SEEK_SET);
 
+    // The panel reads 16-bit samples straight from disk, so other wav encodings
+    // are converted into a temporary 16-bit wav that the panel deletes on close
+    WCHAR tempDataFile[MAX_PATH] = L"";
+    if (isWav && sampleFormat != wavPcm16 &&
+        !ConvertWavToPcm16File(fileName, headerLength, wavDataLength, sampleFormat, samplingRate,
+                               tempDataFile, _countof(tempDataFile),
+                               &headerLength, &wavDataLength)) {
+        fclose(fp);
+        wsprintf(wOut, L"Cannot convert %s to 16-bit samples!", fileName);
+        MessageBox(hwnd, wOut, L"ERROR", MB_OK | MB_ICONERROR);
+        return;
+    }
+
     // Setup the file in the panel
     if (!m_lowerPanel.OpenFile(index, fileName, fileMode,
                                headerLength, static_cast<long>(wavDataLength),
-                               isWav, samplingRate)) {
+                               isWav, samplingRate, sampleFormat,
+                               tempDataFile[0] != L'\0' ? tempDataFile : nullptr)) {
         fclose(fp);
         wsprintf(wOut, L"Cannot load file %s!", fileName);
         MessageBox(hwnd, wOut, L"ERROR", MB_OK | MB_ICONERROR);
@@ -2806,7 +2915,6 @@ void WinsapApp::ProcessCommandLine(HWND hwnd)
     int num = 0;  // Argument index (0, 1, 2, ...)
     int index;
     WCHAR str[MAX_PATH];
-    WCHAR* p;
 
     // Parse command line arguments
     while (*cmdLine != L'\0') {
@@ -2815,17 +2923,33 @@ void WinsapApp::ProcessCommandLine(HWND hwnd)
             cmdLine++;
         }
 
-        // Extract next argument into str
-        p = str;
-        while ((*cmdLine != L'\0') && (*cmdLine != L' ')) {
-            *p++ = *cmdLine++;
+        // Extract next argument into str. Explorer quotes paths containing
+        // spaces, so a quoted argument runs to its closing quote. Characters
+        // past the buffer are skipped, not copied, and reported as too long.
+        const bool quoted = *cmdLine == L'"';
+        if (quoted) {
+            cmdLine++;
         }
-        *p = L'\0';
+        size_t length = 0;
+        bool tooLong = false;
+        while ((*cmdLine != L'\0') && (*cmdLine != (quoted ? L'"' : L' '))) {
+            if (length < _countof(str) - 1) {
+                str[length++] = *cmdLine;
+            }
+            else {
+                tooLong = true;
+            }
+            cmdLine++;
+        }
+        if (quoted && *cmdLine == L'"') {
+            cmdLine++;
+        }
+        str[length] = L'\0';
 
         // Process the argument if non-empty
         if (str[0] != L'\0') {
             // Check filename length
-            if ((int)wcslen(str) > MAXFILENAME) {
+            if (tooLong || length > MAXFILENAME) {
                 MessageBox(hwnd, L"Command line file name is too long!", L"ERROR",
                           MB_OK | MB_ICONERROR);
             }
@@ -2891,7 +3015,8 @@ bool WinsapApp::PlayFileRange(HWND hwnd, Panel& panel, int fileIndex, long offse
 
     const WCHAR* fileName = panel.GetFileName(fileIndex);
     FILE* playbackFile = nullptr;
-    if (_wfopen_s(&playbackFile, fileName, L"rb") != 0 || playbackFile == nullptr) {
+    if (_wfopen_s(&playbackFile, panel.GetDataFileName(fileIndex), L"rb") != 0 ||
+        playbackFile == nullptr) {
         WCHAR errorMessage[MAXFILENAME + 64];
         swprintf_s(errorMessage, _countof(errorMessage),
                    L"Cannot open file %s for playback.", fileName);
