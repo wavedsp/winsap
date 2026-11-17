@@ -7,7 +7,8 @@
  *  PURPOSE: Restore the main window to its last monitor and position.
  *
  *  Update:   2026.9
- *             2026.11 Saved bounds are screen coordinates; rcNormalPosition is converted from workspace coordinates
+ *            2026.11 Saved bounds are screen coordinates; 
+ *                    rcNormalPosition is converted from workspace coordinates
  *
  ************************************************************************/
 

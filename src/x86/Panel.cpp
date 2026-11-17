@@ -8,7 +8,8 @@
  *
  *  Update:   2025.4 Update the code base
  *            2026.1 Porting to C++
- *            2026.11 Per slot, bounds checked parameter frame index; FFT buffer length counted in samples
+ *            2026.11 Per slot, bounds checked parameter frame index; 
+ *                    FFT buffer length counted in samples
  *            2026.11 Sparse parameter frame index, no 40000 frame limit
  *
  ************************************************************************/

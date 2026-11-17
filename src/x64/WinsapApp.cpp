@@ -8,7 +8,9 @@
  *
  *  Update:   2025.4 Update the code base
  *            2026.1 Porting to C++
- *            2026.11 Bounded command line parsing, .par always opens as Parameter, growing backbuffer, raw rate reaches FFT tracks
+ *            2026.11 Bounded command line parsing, 
+ *                    .par always opens as Parameter, 
+ *                    growing backbuffer, raw rate reaches FFT tracks
  *
  ************************************************************************/
 
