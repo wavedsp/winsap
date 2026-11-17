@@ -20,6 +20,7 @@
 #include <commdlg.h>
 #include "DrawContext.h"
 #include "InputDialog.h"
+#include "WinsapHelp.h"
 #include "SpectrogramSettings.h"
 #include "WindowPlacement.h"
 #include <algorithm>
@@ -371,7 +372,8 @@ int WinsapApp::Run()
     MSG msg;
 
     while (GetMessage(&msg, nullptr, 0, 0)) {
-        if (!TranslateAccelerator(msg.hwnd, hAccelTable, &msg)) {
+        // The help window scrolls with the arrow and page keys, which are accelerators here.
+        if (wavedsp::IsHelpMessage(msg) || !TranslateAccelerator(msg.hwnd, hAccelTable, &msg)) {
             TranslateMessage(&msg);
             DispatchMessage(&msg);
         }
@@ -1278,31 +1280,8 @@ void WinsapApp::MovePanels(HWND hwnd, int direction, bool bySkip)
 
 void WinsapApp::ShowHelpTopics(HWND hwnd)
 {
-    MessageBox(
-        hwnd,
-        L"Opening and display\n"
-        L"Use Open Up or Open Down, choose binary-short, parameter, or FFT-amplitude "
-        L"mode. Waveforms use connected display. WAV input must be mono 8, 16, 24 or 32-bit PCM or 32/64-bit float.\n\n"
-        L"Marks and Save As\n"
-        L"Right-click a waveform twice to mark a range; a third click clears it. "
-        L"Save As exports slot 0 from the upper marked panel, otherwise the lower, as WAV.\n\n"
-        L"Navigation and panels\n"
-        L"Arrow/Page keys and Tools move through frames. View All uses the longest open "
-        L"track. Lock Starting Frame makes lower follow the clamped upper start; Sync "
-        L"Panels also copies frame length and visible count.\n\n"
-        L"Zoom and amplitude\n"
-        L"Zoom In/Out changes the visible window. Expand/Compress changes waveform "
-        L"amplitude limits. Frame, count, and zoom requests are clamped to file bounds.\n\n"
-        L"Playback\n"
-        L"Play Up/Down plays the marked range from slot 0. Play All plays every open "
-        L"binary-short slot, upper then lower. Stop or right-click stops and clears the queue.\n\n"
-        L"Rates and spectrograms\n"
-        L"WAV files use their embedded rate; raw PCM uses Set Raw Samplingrate. "
-        L"Spectrogram Contrast changes the dB range and Colour Map cycles palettes.\n\n"
-        L"Files\n"
-        L"Close Files selects slots, Close All clears both panels, and Reload All refreshes "
-        L"open files while retaining any file that cannot be reopened.",
-        L"WinSap Help Topics", MB_OK | MB_ICONINFORMATION);
+    wavedsp::ShowHelp(hwnd, L"WinSap Help Topics", WinsapHelpMarkup(false), WinsapHelpTheme(),
+        MAKEINTRESOURCE(IDI_WSAP));
 }
 
 // ===================== On Command =======================
@@ -1310,7 +1289,8 @@ LRESULT WinsapApp::OnCommand(HWND hwnd, WPARAM wParam, LPARAM lParam)
 {
     int wmId = LOWORD(wParam);
 
-    if (m_audioPlayer.IsPlaying() && wmId != ID_STOP) {
+    if (m_audioPlayer.IsPlaying() && wmId != ID_STOP && wmId != ID_HELP && wmId != ID_HELP_FINDER &&
+        wmId != ID_HELP_INDEX && wmId != IDM_ABOUT) {
         return 0;
     }
 

@@ -9,6 +9,7 @@
   <ItemGroup>
     <ClCompile Include="common\FileDialogs.cpp"><Filter>Common</Filter></ClCompile>
     <ClCompile Include="common\FileOpenDialog.cpp"><Filter>Common</Filter></ClCompile>
+    <ClCompile Include="common\helpwindow.cpp"><Filter>Common</Filter></ClCompile>
     <ClCompile Include="common\InputDialog.cpp"><Filter>Common</Filter></ClCompile>
     <ClCompile Include="common\main.cpp"><Filter>Common</Filter></ClCompile>
     <ClCompile Include="common\SpectrogramCache.cpp"><Filter>Common</Filter></ClCompile>
@@ -26,6 +27,7 @@
     <ClInclude Include="common\FileDialogs.h"><Filter>Common</Filter></ClInclude>
     <ClInclude Include="common\FileOpenDialog.h"><Filter>Common</Filter></ClInclude>
     <ClInclude Include="common\framework.h"><Filter>Common</Filter></ClInclude>
+    <ClInclude Include="common\helpwindow.h"><Filter>Common</Filter></ClInclude>
     <ClInclude Include="common\InputDialog.h"><Filter>Common</Filter></ClInclude>
     <ClInclude Include="common\Resource.h"><Filter>Common</Filter></ClInclude>
     <ClInclude Include="common\SpectrogramCache.h"><Filter>Common</Filter></ClInclude>

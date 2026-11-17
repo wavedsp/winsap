@@ -120,6 +120,7 @@
   <ItemGroup>
     <ClCompile Include="common\FileDialogs.cpp" />
     <ClCompile Include="common\FileOpenDialog.cpp" />
+    <ClCompile Include="common\helpwindow.cpp" />
     <ClCompile Include="common\InputDialog.cpp" />
     <ClCompile Include="common\main.cpp" />
     <ClCompile Include="common\SpectrogramCache.cpp" />
@@ -148,6 +149,7 @@
     <ClInclude Include="common\FileDialogs.h" />
     <ClInclude Include="common\FileOpenDialog.h" />
     <ClInclude Include="common\framework.h" />
+    <ClInclude Include="common\helpwindow.h" />
     <ClInclude Include="common\InputDialog.h" />
     <ClInclude Include="common\Resource.h" />
     <ClInclude Include="common\FftKernel.h" />

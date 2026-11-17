@@ -20,6 +20,7 @@
 #include <commdlg.h>
 #include "DrawContext.h"
 #include "InputDialog.h"
+#include "WinsapHelp.h"
 #include "SpectrogramSettings.h"
 #include "WindowPlacement.h"
 #include <algorithm>
@@ -416,7 +417,8 @@ int WinsapApp::Run()
     MSG msg;
 
     while (GetMessage(&msg, nullptr, 0, 0)) {
-        if (!TranslateAccelerator(msg.hwnd, hAccelTable, &msg)) {
+        // The help window scrolls with the arrow and page keys, which are accelerators here.
+        if (wavedsp::IsHelpMessage(msg) || !TranslateAccelerator(msg.hwnd, hAccelTable, &msg)) {
             TranslateMessage(&msg);
             DispatchMessage(&msg);
         }
@@ -1640,43 +1642,8 @@ bool WinsapApp::OpenStereoFile(HWND hwnd, const WCHAR* fileName, int upperIndex,
 
 void WinsapApp::ShowHelpTopics(HWND hwnd)
 {
-    MessageBox(
-        hwnd,
-        L"Opening and display\n"
-        L"Use Open Up or Open Down, choose binary-short, parameter, or FFT-amplitude "
-        L"mode. Waveforms use connected display. WAV input may be 8, 16, 24 or 32-bit "
-        L"integer PCM or 32/64-bit float, mono or stereo. A stereo file shows its left "
-        L"channel in the upper panel and its right channel in the lower panel; the two "
-        L"panels then share frames, zoom and marks. A stereo file in FFT-amplitude mode "
-        L"must be the only open file; with one in binary-short mode no file may use "
-        L"FFT-amplitude mode.\n\n"
-        L"Marks and Save As\n"
-        L"Right-click a waveform twice to mark a range; a third click clears it. "
-        L"Save As exports slot 0 from the upper marked panel, otherwise the lower, as WAV.\n\n"
-        L"Navigation and panels\n"
-        L"Arrow/Page keys and Tools move through frames. View All uses the longest open "
-        L"track. Lock Starting Frame makes lower follow the clamped upper start; Sync "
-        L"Panels also copies frame length and visible count.\n\n"
-        L"Zoom and amplitude\n"
-        L"Zoom In/Out changes the visible window. Expand/Compress changes waveform "
-        L"amplitude limits. Frame, count, and zoom requests are clamped to file bounds.\n\n"
-        L"Playback\n"
-        L"Play All plays every open file in turn, upper then lower. Play Up/Down plays "
-        L"the marked area of the first file in that panel with data there. Clicking a "
-        L"file name plays the whole file. A stereo file always plays in stereo from these. "
-        L"Right-click a file name for a menu: Close file, Play marked area, and for a "
-        L"stereo file also Play this channel and Play marked area in this channel. "
-        L"FFT-amplitude files play the same way, with the cursor running over "
-        L"the spectrogram; the marked "
-        L"block shows as white edge lines on the spectrogram. "
-        L"Stop or right-click stops and clears the queue.\n\n"
-        L"Rates and spectrograms\n"
-        L"WAV files use their embedded rate; raw PCM uses Set Raw Samplingrate. "
-        L"Spectrogram Contrast changes the dB range and Colour Map cycles palettes.\n\n"
-        L"Files\n"
-        L"Close Files selects slots, Close All clears both panels, and Reload All refreshes "
-        L"open files while retaining any file that cannot be reopened.",
-        L"WinSap Help Topics", MB_OK | MB_ICONINFORMATION);
+    wavedsp::ShowHelp(hwnd, L"WinSap Help Topics", WinsapHelpMarkup(true), WinsapHelpTheme(),
+        MAKEINTRESOURCE(IDI_WSAP));
 }
 
 // ===================== On Command =======================
@@ -1686,7 +1653,8 @@ LRESULT WinsapApp::OnCommand(HWND hwnd, WPARAM wParam, LPARAM lParam)
 
     // Playback reads directly from the panel-owned sample buffer. Defer commands
     // that could replace or close files until playback has stopped.
-    if (m_audioPlayer.IsPlaying() && wmId != ID_STOP) {
+    if (m_audioPlayer.IsPlaying() && wmId != ID_STOP && wmId != ID_HELP && wmId != ID_HELP_FINDER &&
+        wmId != ID_HELP_INDEX && wmId != IDM_ABOUT) {
         return 0;
     }
 
