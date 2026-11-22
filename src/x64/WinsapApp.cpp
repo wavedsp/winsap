@@ -180,6 +180,59 @@ INT_PTR CALLBACK AboutDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 SetProp(hwnd, L"DialogFont", (HANDLE)hFont);
             }
         }
+
+        // Set window position to center on parent
+        HWND owner = GetWindow(hwnd, GW_OWNER);
+        if (owner) {
+            RECT ownerRect{}, dialogRect{};
+            GetWindowRect(owner, &ownerRect);
+            GetWindowRect(hwnd, &dialogRect);
+
+            const int width = dialogRect.right - dialogRect.left;
+            const int height = dialogRect.bottom - dialogRect.top;
+            const int ownerWidth = ownerRect.right - ownerRect.left;
+            const int ownerHeight = ownerRect.bottom - ownerRect.top;
+
+            int x = ownerRect.left + (ownerWidth - width) / 2;
+            int y = ownerRect.top + (ownerHeight - height) / 2;
+
+            // clamp to nearest monitor work area
+            MONITORINFO monitorInfo{};
+            monitorInfo.cbSize = sizeof(monitorInfo);
+
+            if (GetMonitorInfoW(MonitorFromWindow(owner, MONITOR_DEFAULTTONEAREST), &monitorInfo)) {
+                const RECT& work = monitorInfo.rcWork;
+
+                int minX = static_cast<int>(work.left);
+                int minY = static_cast<int>(work.top);
+                int maxX = static_cast<int>(work.right);
+                int maxY = static_cast<int>(work.bottom);
+
+                // 1. Calculate the maximum possible X/Y while keeping the window inside the work area
+                int maxAllowedX = maxX - width;
+                int maxAllowedY = maxY - height;
+
+                // 2. If the window is too large on an axis, align that edge to the work area.
+                if (maxAllowedX < minX) {
+                    x = minX;
+                } else if (x < minX) {
+                    x = minX;
+                } else if (x > maxAllowedX) {
+                    x = maxAllowedX;
+                }
+
+                if (maxAllowedY < minY) {
+                    y = minY;
+                } else if (y < minY) {
+                    y = minY;
+                } else if (y > maxAllowedY) {
+                    y = maxAllowedY;
+                }
+            }
+
+            SetWindowPos(hwnd, nullptr, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+
         return TRUE;
     }
 
